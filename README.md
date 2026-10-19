@@ -1,0 +1,219 @@
+# claude-sync
+
+Веб-морда на VPS: список сессий Claude Code, Resume с Remote Control (дальше работа с телефона в приложении Claude) и Stop с вывозом изменений в git.
+
+## Как работает
+
+- **Список** — транскрипты из `~/.claude/projects` (туда их синкает Syncthing с ноута и компа).
+- **Resume:**
+  1. `git fetch` и fast-forward ветки; если есть невлитая `vps-wip/<id>`, переход на неё;
+  2. trust для папки в `~/.claude.json`;
+  3. `claude --resume <id> --remote-control` в tmux (`tmux -L claude-sync`);
+  4. в строке появляется кнопка «Открыть» — ссылка на сессию в приложении.
+- **Stop:**
+  1. `/exit`, при таймауте `kill-session`;
+  2. всё изменённое коммитится и пушится в `vps-wip/<id>`, без force;
+  3. **только после успешного push** клон возвращается на исходную ветку через `reset --hard` к remote;
+  4. `cargo clean`.
+- В одном репо одновременно работает только одна сессия морды.
+- Подключиться к сессии по ssh: `tmux -L claude-sync attach -t cs-<id>` (выйти, не убивая: `Ctrl-b d`).
+
+## Установка на VPS (Ubuntu 22.04)
+
+Всё под пользователем `user`, кроме шагов, помеченных **root**. Если у пользователя нет sudo, `sudo …` падает с ошибкой, которую легко не заметить: такие команды выполняй прямо под root.
+
+### 1. Пользователь и linger (root)
+
+```bash
+adduser user                      # home и пароль; имя и путь к home как на ноуте
+loginctl enable-linger user
+loginctl show-user user -p Linger # должно быть Linger=yes
+```
+
+Linger нужен для Syncthing: он работает как пользовательский сервис (`systemctl --user`). Без linger systemd гасит пользовательские сервисы, когда закрывается последняя ssh-сессия, и синк идёт только пока ты подключён. Самой морде linger не нужен: это системный сервис, tmux и claude живут внутри него.
+
+### 2. Пакеты (root)
+
+```bash
+apt install git tmux syncthing jq
+```
+
+### 3. Claude Code
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash   # ставится в ~/.local/bin/claude
+claude                                           # залогиниться через claude.ai (для RC нужен именно такой логин)
+```
+
+Если claude будет собирать Rust-проекты, поставь rustup (`--profile minimal`) и конфиг cargo, чтобы target'ы занимали меньше места:
+
+```bash
+mkdir -p ~/.cargo && cp deploy/cargo-config.toml ~/.cargo/config.toml
+```
+
+### 4. Syncthing
+
+```bash
+systemctl --user enable --now syncthing
+```
+
+- Синкается только `~/.claude/projects`. Код через Syncthing не синкать, только через git.
+- На ноуте и компе адрес VPS укажи явно: `tcp://172.29.172.1:22000` вместо `dynamic`. Иначе соединение может пойти через публичный relay.
+- GUI на VPS слушает только `127.0.0.1:8384`. Открыть его можно через туннель: `ssh -L 8385:127.0.0.1:8384 user@<ip>`, потом `http://127.0.0.1:8385`.
+
+### 5. Git и ключи
+
+```bash
+ssh-keygen -t ed25519
+cat ~/.ssh/id_ed25519.pub                 # добавить в GitHub, git.csit.sgu.ru и т.д.
+git config --global user.name "user (vps1)"
+git config --global user.email "<почта>"
+ssh -T git@github.com                     # и для каждого другого хоста
+```
+
+- Ключу нужен доступ **на запись**. Deploy key только на чтение даст клонировать, но Stop упадёт на push.
+- `ssh -T` по каждому хосту выполни руками хотя бы один раз. Морда ходит в git с `BatchMode=yes` и не может ответить на вопрос «доверять ли хосту». Если хоста нет в `known_hosts`, fetch падает с `Host key verification failed`. Скрипт клонирования ключи хостов добавляет сам.
+
+### 6. Проекты
+
+С ноута: `scripts/clone-to-vps.sh` (см. «Перенос репозиториев на VPS»).
+
+### 7. Бинарь
+
+Обычный бинарь, собранный на Arch, на Ubuntu 22.04 не запустится: там старее glibc. Поэтому собирай статический musl-бинарь:
+
+```bash
+cd ~/projects/rust/bots/claude-sync       # пути ниже относительные
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+
+ssh user@<ip> 'mkdir -p ~/.local/bin ~/.config/claude-sync'
+scp target/x86_64-unknown-linux-musl/release/claude-sync user@<ip>:.local/bin/
+scp deploy/{claude-sync.service,env.example} user@<ip>:
+```
+
+Шаблоны и статика вшиты в бинарь, других файлов морде не нужно.
+
+### 8. Конфиг
+
+```bash
+mv ~/env.example ~/.config/claude-sync/env
+chmod 600 ~/.config/claude-sync/env
+openssl rand -base64 24                   # пароль для морды
+nvim ~/.config/claude-sync/env            # AUTH_USER, AUTH_PASS, NODE_NAME
+```
+
+### 9. Сервис (root)
+
+```bash
+cp /home/user/claude-sync.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now claude-sync
+systemctl status claude-sync
+journalctl -u claude-sync -f
+```
+
+### 10. Проверка
+
+С телефона или ноута под VPN:
+- `http://172.29.172.1:8080` спрашивает пароль и показывает список сессий;
+- без VPN — таймаут.
+
+### Вторая VPS
+
+Всё то же самое, но с `NODE_NAME=vps2` и своим ключом в git-хостингах. Если Amnezia там тоже стоит, проверь адрес `amn0` через `ip -br a` и пропиши его в `BIND_ADDR` и в адрес Syncthing.
+
+### Обновление морды
+
+Пересобрать musl-бинарь, сделать `scp` и `systemctl restart claude-sync` (root). Запущенные claude-сессии переживают и рестарт, и стоп морды: за это отвечает `KillMode=process` в unit-файле. Его не убирать.
+
+## Перенос репозиториев на VPS
+
+Проекты на VPS должны лежать по тем же путям, что на ноуте. Скрипт находит все git-репо под `~/projects`, создаёт на VPS такие же папки и клонирует их из `origin` на ту же ветку, на которой ты сейчас. Существующие репо не трогает, поэтому его можно запускать повторно, когда появятся новые проекты.
+
+```bash
+scripts/clone-to-vps.sh -n     # посмотреть список, ничего не делая
+scripts/clone-to-vps.sh        # перенести; пароль ssh спросит один раз
+```
+
+- Клонирует сама VPS своим ключом, поэтому ключ VPS должен быть добавлен везде, откуда клонируешь: GitHub, `git.csit.sgu.ru` и т.д. Где ключа нет, будет строка `✗ … clone не прошёл`, остальные репо всё равно склонируются.
+- Пропускаются: репо без `origin`, `origin` с локальным путём, submodule/worktree, репо внутри других репо (флаг `--nested` их включает).
+- Другой корень или хост: `-r ~/projects/rust -H user@host`.
+
+## Дома после работы на VPS
+
+```bash
+git fetch
+git branch -r --list 'origin/vps-wip/*'      # что наработано на VPS
+git merge origin/vps-wip/<id>                 # или rebase / cherry-pick
+git push origin --delete vps-wip/<id>
+```
+
+Прежде чем продолжать сессию на ноуте, дождись, пока Syncthing досинкает транскрипт с VPS. Если начать писать в сессию с двух машин одновременно, появится conflict-копия (см. ниже).
+
+## Если что-то не так
+
+Сначала смотри логи и экран сессии:
+
+```bash
+journalctl -u claude-sync -n 100 --no-pager   # логи морды
+tmux -L claude-sync ls                         # какие claude-сессии запущены
+tmux -L claude-sync attach -t cs-<id>          # экран сессии (или кнопка «Экран» в морде)
+ls ~/.local/state/claude-sync/                 # незавершённые запуски (<id>.json)
+```
+
+### Syncthing
+
+| Симптом | Причина и что делать |
+|---|---|
+| Синк идёт только пока открыт ssh | Не включён linger. Под root: `loginctl enable-linger user`. Проверка: выйти из ssh, подождать, зайти; в `systemctl --user status syncthing` время `Active: since` должно быть раньше входа. |
+| В журнале соединение через relay (`relay-client`) | На ноуте у VPS адрес `dynamic`. Поставь `tcp://172.29.172.1:22000`. |
+| Значок конфликта у сессии, в папке файлы `*.sync-conflict-*.jsonl` | Сессию писали с двух машин, пока они не видели друг друга. Это бывает, если VPS была отключена, сессию запустили на двух VPS или ноут продолжил её до конца синка. Морда показывает самую свежую копию. Разберись, какая нужна, и удали лишнюю на любой ноде, удаление досинкается. |
+| Сессии нет в списке | Транскрипт ещё не доехал (смотри статус в GUI Syncthing) или в сессии нет ни одного сообщения: пустые сессии морда не показывает. По умолчанию показываются 50 последних, остальные — по кнопке «Показать все». |
+
+### Resume
+
+| Сообщение | Что делать |
+|---|---|
+| `на этой машине нет папки …` | Репо не склонирован: запусти `scripts/clone-to-vps.sh` с ноута. |
+| `в клоне на VPS есть незакоммиченные изменения` | Кто-то менял клон руками. Зайди по ssh, посмотри `git status`, закоммить или выкинь. |
+| `ветка … разошлась с origin/…` | Клон на VPS отстал не fast-forward'ом: ты переписал историю (force-push). Если в клоне ничего нужного нет: `git reset --hard origin/<ветка>`. |
+| `прошлый запуск этой сессии не завершён: сначала нажми Stop` | Прошлый Stop не довёз изменения: push упал или морду убили посередине. Нажми Stop («Вывезти изменения») ещё раз. |
+| `в этом репо уже работает сессия «…»` | В одном репо одновременно работает только одна сессия. Останови ту. |
+| `Host key verification failed` / `Permission denied (publickey)` | Хоста нет в `known_hosts` или ключа VPS нет в git-хостинге. Выполни `ssh -T git@<хост>` руками (шаг 5). |
+| Таймаут, кнопки «Открыть» нет | Открой «Экран». Варианты: висит trust-диалог (claude перезаписал `~/.claude.json` поверх морды; выбери «Yes» через `attach` или нажми Stop → Resume), claude разлогинен (`claude` по ssh и залогиниться заново), claude показывает диалог обновления или ошибку. |
+| `claude завершился` | На экране последние строки и код выхода. Нажми Stop: клон вернётся в исходное состояние. |
+
+### Stop
+
+| Сообщение | Что делать |
+|---|---|
+| `push не прошёл, клон оставлен как есть` | Чаще всего ключ только на чтение или нет сети. Изменения лежат в локальной ветке `vps-wip/<id>` на VPS, ничего не потеряно. Исправь доступ и нажми «Вывезти изменения». |
+| Stop долго висит | claude не вышел по `/exit` (например, ждёт ответа на вопрос). Через `STOP_TIMEOUT_SECS` (20 с) морда убьёт сессию сама, изменения всё равно уедут в git. |
+
+### Морда
+
+| Симптом | Что делать |
+|---|---|
+| Сервис перезапускается, в журнале `Cannot assign requested address` | Адреса `172.29.172.1` ещё нет: Docker с Amnezia не поднялся. Морда перезапускается каждые 5 с и поднимется сама. Если Amnezia переустанавливали, подсеть могла смениться: сверь `ip -br a` (интерфейс `amn0`) с `BIND_ADDR`. |
+| `cannot execute binary file` / ошибка про `GLIBC_…` | Залит не musl-бинарь. Пересобери с `--target x86_64-unknown-linux-musl`. |
+| `scp: stat local … No such file` | `scp` запущен не из папки проекта. Сделай `cd` в папку или укажи абсолютный путь. |
+| 403 на кнопках | POST без заголовка `HX-Request`, так режется CSRF. Из браузера такого не бывает. Если морду дёргают curl'ом, нужен `-H 'HX-Request: true'`. |
+| Кракозябры на экране сессии | В unit-файле должен быть `LANG=C.UTF-8`. |
+
+### Место на диске
+
+```bash
+df -h /
+du -sh ~/.cargo/registry ~/projects
+find ~/projects -name target -type d -prune -exec du -sh {} + | sort -h
+```
+
+`cargo clean` выполняется на каждый Stop, но target'ы от ручных сборок по ssh остаются. `~/.cargo/registry` растёт со временем, его можно иногда удалять целиком.
+
+## Разработка
+
+```bash
+cargo test    # юнит-тесты + сценарии git на временных репо (tests/git_flow.rs) + живой tmux
+AUTH_USER=u AUTH_PASS=p cargo run    # http://127.0.0.1:8080
+```
