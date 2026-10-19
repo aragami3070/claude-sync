@@ -1,0 +1,33 @@
+<article class="row st-{{ row.status }}" id="s-{{ row.id }}"{% if row.poll %} hx-get="/sessions/{{ row.id }}/row" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  <div class="head">
+    <span class="title">{{ row.title }}</span>
+    <span class="badge">{{ row.status_label }}</span>
+  </div>
+  <div class="meta">
+    <span class="cwd">{{ row.cwd }}</span>{% if let Some(b) = row.branch.as_deref() %} · {{ b }}{% endif %} · {{ row.ago }}
+  </div>
+  {% if row.conflict %}<div class="flag">⚠ рядом есть sync-conflict копия транскрипта</div>{% endif %}
+  {% if row.no_repo %}<div class="flag">нет git-репозитория в cwd на этой машине</div>{% endif %}
+  {% if let Some(c) = row.continued_in.as_deref() %}<div class="flag">продолжена в {{ c }}</div>{% endif %}
+  {% if let Some(m) = row.msg.as_deref() %}
+  <div class="msg{% if row.msg_error %} err{% endif %}">
+    <pre>{{ m }}</pre>
+    <button class="link" hx-post="/sessions/{{ row.id }}/dismiss" hx-target="#s-{{ row.id }}" hx-swap="outerHTML">скрыть</button>
+  </div>
+  {% endif %}
+  <div class="actions">
+    {% if row.can_start %}
+    <button class="primary" hx-post="/sessions/{{ row.id }}/start" hx-target="#s-{{ row.id }}" hx-swap="outerHTML" hx-disabled-elt="this">Resume</button>
+    {% endif %}
+    {% if row.can_stop %}
+    <button class="danger" hx-post="/sessions/{{ row.id }}/stop" hx-target="#s-{{ row.id }}" hx-swap="outerHTML" hx-disabled-elt="this" hx-confirm="Остановить и вывезти изменения в wip-ветку?">{{ row.stop_label }}</button>
+    {% endif %}
+    {% if let Some(u) = row.rc_url.as_deref() %}
+    <a class="btn" href="{{ u }}" target="_blank" rel="noopener">Открыть</a>
+    {% endif %}
+    {% if row.has_pane %}
+    <button hx-get="/sessions/{{ row.id }}/screen" hx-target="#scr-{{ row.id }}" hx-swap="innerHTML">Экран</button>
+    {% endif %}
+  </div>
+  <div id="scr-{{ row.id }}"></div>
+</article>

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>claude-sync · {{ node }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>claude-sync <small>{{ node }}</small></h1>
+    <button hx-get="/sessions{% if all %}?all=1{% endif %}" hx-target="#list" hx-swap="innerHTML">Обновить</button>
+  </header>
+  <main id="list">
+    {% include "_list.html" %}
+  </main>
+</body>
+</html>

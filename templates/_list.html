@@ -1,0 +1,10 @@
+{% if let Some(w) = warning.as_deref() %}<div class="warn">{{ w }}</div>{% endif %}
+{% for row in rows %}
+{% include "_row.html" %}
+{% endfor %}
+{% if rows.is_empty() %}<p class="empty">Сессий нет</p>{% endif %}
+{% if hidden > 0 %}
+<button class="more" hx-get="/sessions?all=1" hx-target="#list" hx-swap="innerHTML">Показать все (ещё {{ hidden }})</button>
+{% else if all %}
+<button class="more" hx-get="/sessions" hx-target="#list" hx-swap="innerHTML">Только последние</button>
+{% endif %}

@@ -1,0 +1,6 @@
+# ~/.cargo/config.toml на VPS: target'ы в разы меньше, места 40 ГБ на всё.
+[build]
+incremental = false
+
+[profile.dev]
+debug = 0

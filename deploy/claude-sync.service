@@ -1,0 +1,23 @@
+[Unit]
+Description=claude-sync web
+# 172.29.172.1 появляется только после того, как Docker поднимет сеть Amnezia.
+# Если морда стартует раньше, bind упадёт, и systemd перезапустит её через 5 с.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=aragami3070
+WorkingDirectory=/home/aragami3070
+EnvironmentFile=/home/aragami3070/.config/claude-sync/env
+Environment=HOME=/home/aragami3070
+Environment=LANG=C.UTF-8
+Environment=PATH=/home/aragami3070/.local/bin:/home/aragami3070/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/aragami3070/.local/bin/claude-sync
+Restart=on-failure
+RestartSec=5
+# Обязательно: иначе остановка/рестарт морды убьёт tmux-сервер и все claude-сессии,
+# они живут в том же cgroup.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
