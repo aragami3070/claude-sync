@@ -12,6 +12,23 @@
     <h1>claude-sync <small>{{ node }}</small></h1>
     <button hx-get="/sessions{% if all %}?all=1{% endif %}" hx-target="#list" hx-swap="innerHTML">Обновить</button>
   </header>
+  <details class="new">
+    <summary>Новая сессия</summary>
+    <form hx-post="/new" hx-target="#new-msg" hx-swap="innerHTML" hx-disabled-elt="find button">
+      <label>Папка
+        <input name="path" list="dirs" required placeholder="~/projects/…" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">
+      </label>
+      <label>ssh-ссылка, если репо на VPS ещё нет
+        <input name="url" placeholder="git@github.com:user/repo.git" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">
+      </label>
+      <label>Название (необязательно)
+        <input name="name" autocomplete="off">
+      </label>
+      <button class="primary">Запустить</button>
+    </form>
+    <div id="new-msg"></div>
+    <datalist id="dirs">{% for d in dirs %}<option value="{{ d }}">{% endfor %}</datalist>
+  </details>
   <main id="list">
     {% include "_list.html" %}
   </main>

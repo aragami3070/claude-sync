@@ -1,0 +1,2 @@
+{% if let Some(e) = error.as_deref() %}<div class="msg err"><pre>{{ e }}</pre></div>{% else %}<div class="msg"><pre>Запускаю, строка сессии появилась в списке.</pre></div>{% endif %}
+{% if let Some(row) = row.as_ref() %}<div hx-swap-oob="afterbegin:#list">{% include "_row.html" %}</div>{% endif %}

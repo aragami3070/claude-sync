@@ -1,7 +1,8 @@
-//! Общее состояние и сценарии Resume / Stop. Оба идут в фоне, UI опрашивает строку.
+//! Общее состояние и сценарии Resume / New / Stop. Все идут в фоне, UI опрашивает строку.
 
 use std::{
     collections::HashMap,
+    future::Future,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -34,12 +35,29 @@ impl Op {
     }
 }
 
+/// Новая сессия из формы.
+#[derive(Debug, Clone)]
+pub struct NewReq {
+    /// Рабочая папка claude; при `url` — куда клонировать.
+    pub cwd: PathBuf,
+    pub url: Option<String>,
+    pub name: Option<String>,
+}
+
+/// Новая сессия, у которой ещё нет транскрипта с сообщениями: по ней рисуется строка.
+#[derive(Debug, Clone)]
+pub struct Fresh {
+    pub cwd: PathBuf,
+    pub name: Option<String>,
+}
+
 pub struct App {
     pub cfg: Config,
     pub scanner: Arc<Scanner>,
     pub tmux: Tmux,
     pub git: GitCtx,
     ops: Mutex<HashMap<Uuid, Op>>,
+    fresh: Mutex<HashMap<Uuid, Fresh>>,
 }
 
 impl App {
@@ -54,6 +72,7 @@ impl App {
                 state_dir: cfg.state_dir.clone(),
             },
             ops: Mutex::new(HashMap::new()),
+            fresh: Mutex::new(HashMap::new()),
             cfg,
         })
     }
@@ -89,6 +108,18 @@ impl App {
         }
     }
 
+    pub fn fresh(&self, id: &Uuid) -> Option<Fresh> {
+        self.fresh.lock().unwrap().get(id).cloned()
+    }
+
+    pub fn fresh_snapshot(&self) -> HashMap<Uuid, Fresh> {
+        self.fresh.lock().unwrap().clone()
+    }
+
+    pub fn forget_fresh(&self, id: &Uuid) {
+        self.fresh.lock().unwrap().remove(id);
+    }
+
     /// Ставит операцию, если по этой сессии ничего не идёт.
     fn try_begin(&self, id: Uuid, op: Op) -> bool {
         let mut ops = self.ops.lock().unwrap();
@@ -107,36 +138,53 @@ impl App {
         self.ops.lock().unwrap().insert(id, op);
     }
 
-    /// Запускает Resume в фоне. `false`, если по сессии уже идёт операция.
-    /// `&Arc<Self>`: фоновая задача переживает запрос и держит весь App.
-    pub fn spawn_start(self: &Arc<Self>, id: Uuid) -> bool {
-        if !self.try_begin(id, Op::Starting) {
+    /// Фоновая операция над сессией. `false`, если по ней уже что-то идёт.
+    /// `&Arc<Self>`: задача переживает запрос и держит весь App.
+    fn spawn_op<F, Fut>(self: &Arc<Self>, id: Uuid, op: Op, what: &'static str, f: F) -> bool
+    where
+        F: FnOnce(Arc<Self>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<String>> + Send + 'static,
+    {
+        if !self.try_begin(id, op) {
             return false;
         }
         let me = self.clone();
         tokio::spawn(async move {
-            let res = me.start(id).await;
+            let res = f(me.clone()).await;
             if let Err(e) = &res {
-                tracing::warn!(%id, "resume: {e:#}");
+                tracing::warn!(%id, "{what}: {e:#}");
             }
             me.finish(id, res);
         });
         true
     }
 
+    pub fn spawn_start(self: &Arc<Self>, id: Uuid) -> bool {
+        self.spawn_op(id, Op::Starting, "resume", move |me| async move {
+            me.start(id).await
+        })
+    }
+
     pub fn spawn_stop(self: &Arc<Self>, id: Uuid) -> bool {
-        if !self.try_begin(id, Op::Stopping) {
-            return false;
-        }
-        let me = self.clone();
-        tokio::spawn(async move {
-            let res = me.stop(id).await;
-            if let Err(e) = &res {
-                tracing::warn!(%id, "stop: {e:#}");
-            }
-            me.finish(id, res);
+        self.spawn_op(id, Op::Stopping, "stop", move |me| async move {
+            me.stop(id).await
+        })
+    }
+
+    /// Новая сессия с заранее выбранным id: по нему строка в UI найдёт её до первого промпта.
+    pub fn spawn_new(self: &Arc<Self>, req: NewReq) -> Uuid {
+        let id = Uuid::new_v4();
+        self.fresh.lock().unwrap().insert(
+            id,
+            Fresh {
+                cwd: req.cwd.clone(),
+                name: req.name.clone(),
+            },
+        );
+        self.spawn_op(id, Op::Starting, "new", move |me| async move {
+            me.new_session(id, req).await
         });
-        true
+        id
     }
 
     /// Занят ли git root другой сессией: запущенной в tmux или не вывезенной.
@@ -147,30 +195,38 @@ impl App {
         panes: &HashMap<Uuid, Pane>,
     ) -> Option<String> {
         let sessions = self.sessions().await;
+        let states: HashMap<Uuid, PathBuf> = self
+            .git
+            .all_states()
+            .into_iter()
+            .map(|(oid, st)| (oid, st.cwd))
+            .collect();
         let title = |oid: &Uuid| {
             sessions
                 .iter()
                 .find(|s| s.id == *oid)
                 .map(|s| s.title())
+                .or_else(|| self.fresh(oid).map(|f| f.name.unwrap_or_else(|| "новая сессия".into())))
                 .unwrap_or_else(|| oid.to_string())
         };
-        for (oid, pane) in panes {
-            if *oid == id || pane.dead {
-                continue;
-            }
-            let other_root = sessions
+        // У новой сессии до первого промпта нет транскрипта, её папка есть только в state.
+        let root_of = |oid: &Uuid| {
+            sessions
                 .iter()
                 .find(|s| s.id == *oid)
-                .and_then(Session::git_root);
-            if other_root.as_deref() == Some(root) {
+                .and_then(Session::git_root)
+                .or_else(|| states.get(oid).and_then(|c| find_git_root(c)))
+        };
+        for (oid, pane) in panes {
+            if *oid != id && !pane.dead && root_of(oid).as_deref() == Some(root) {
                 return Some(format!("в этом репо уже работает сессия «{}»", title(oid)));
             }
         }
-        for (oid, st) in self.git.all_states() {
-            if oid != id && find_git_root(&st.cwd).as_deref() == Some(root) {
+        for (oid, cwd) in &states {
+            if *oid != id && find_git_root(cwd).as_deref() == Some(root) {
                 return Some(format!(
                     "в этом репо не вывезена сессия «{}»: сначала Stop у неё",
-                    title(&oid)
+                    title(oid)
                 ));
             }
         }
@@ -183,8 +239,31 @@ impl App {
         if !cwd.is_dir() {
             bail!("на этой машине нет папки {}", cwd.display());
         }
-        let root = find_git_root(&cwd).context("в cwd нет git-репозитория")?;
+        let git_msg = self.prepare_dir(id, &cwd).await?;
+        let offset = std::fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0);
+        self.launch(id, &cwd, &format!("--resume {id}"), Some((s.path, offset)), git_msg)
+            .await
+    }
 
+    async fn new_session(&self, id: Uuid, req: NewReq) -> Result<String> {
+        let mut notes = Vec::new();
+        if let Some(url) = &req.url {
+            notes.push(self.git.clone_into(url, &req.cwd).await?);
+        }
+        if !req.cwd.is_dir() {
+            bail!("на этой машине нет папки {}", req.cwd.display());
+        }
+        notes.push(self.prepare_dir(id, &req.cwd).await?);
+        let mut args = format!("--session-id {id}");
+        if let Some(name) = &req.name {
+            args.push_str(&format!(" -n {}", shell_quote(name)));
+        }
+        self.launch(id, &req.cwd, &args, None, notes.join("; ")).await
+    }
+
+    /// Общее для Resume и New: проверки, git, trust.
+    async fn prepare_dir(&self, id: Uuid, cwd: &Path) -> Result<String> {
+        let root = find_git_root(cwd).context("в папке нет git-репозитория")?;
         let panes = self.tmux.list().await?;
         match panes.get(&id) {
             Some(p) if !p.dead => bail!("сессия уже запущена"),
@@ -197,28 +276,47 @@ impl App {
             bail!(why);
         }
 
-        let git_msg = self.git.prepare(&id, &cwd).await?;
+        let git_msg = self.git.prepare(&id, cwd).await?;
 
         let claude_json = self.cfg.claude_json.clone();
-        let trust_cwd = cwd.clone();
+        let trust_cwd = cwd.to_path_buf();
         tokio::task::spawn_blocking(move || trust::ensure_trusted(&claude_json, &trust_cwd))
             .await??;
+        Ok(git_msg)
+    }
 
-        let offset = std::fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0);
+    /// Запускает claude в tmux и ждёт регистрации Remote Control.
+    /// `transcript`: файл и смещение, после которого искать `bridge-session`;
+    /// `None` — файла ещё нет, ищем по id.
+    async fn launch(
+        &self,
+        id: Uuid,
+        cwd: &Path,
+        args: &str,
+        transcript: Option<(PathBuf, u64)>,
+        git_msg: String,
+    ) -> Result<String> {
         let command = format!(
-            "exec {} --resume {id} --remote-control",
+            "exec {} {args} --remote-control",
             shell_quote(&self.cfg.claude_bin)
         );
-        self.tmux.start(&id, &cwd, &command).await?;
+        self.tmux.start(&id, cwd, &command).await?;
 
         let deadline = Instant::now() + self.cfg.start_timeout;
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let path = s.path.clone();
-            let bridge = tokio::task::spawn_blocking(move || sessions::bridge_after(&path, offset))
-                .await
-                .ok()
-                .flatten();
+            let scanner = self.scanner.clone();
+            let tr = transcript.clone();
+            let bridge = tokio::task::spawn_blocking(move || {
+                let (path, offset) = match tr {
+                    Some(t) => t,
+                    None => (scanner.find_file(id)?, 0),
+                };
+                sessions::bridge_after(&path, offset)
+            })
+            .await
+            .ok()
+            .flatten();
             if bridge.is_some() {
                 return Ok(format!("{git_msg}; Remote Control подключён"));
             }
@@ -261,7 +359,13 @@ impl App {
         }
 
         let session = self.session(id).await;
-        let title = session.as_ref().map(Session::title).unwrap_or_default();
+        let title = match &session {
+            Some(s) => s.title(),
+            None => self
+                .fresh(&id)
+                .and_then(|f| f.name)
+                .unwrap_or_else(|| "новая сессия".into()),
+        };
         let cwd = match self.git.read_state(&id) {
             Some(st) => st.cwd,
             None => session

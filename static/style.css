@@ -91,3 +91,18 @@ button.more { width: 100%; }
 }
 .warn { padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--err) 12%, transparent); margin-bottom: 10px; }
 .empty { color: var(--muted); text-align: center; }
+.new { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-bottom: 12px; }
+.new summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.new form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.new label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.new input {
+  font: inherit;
+  font-size: 16px; /* меньше 16px — iOS зумит страницу при фокусе */
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+}
+.new .msg { margin-bottom: 4px; }

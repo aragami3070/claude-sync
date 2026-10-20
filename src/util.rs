@@ -1,10 +1,10 @@
 use std::{
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Stdio,
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
 pub struct Output {
@@ -100,6 +100,34 @@ pub fn ago(t: SystemTime) -> String {
     }
 }
 
+/// Путь из формы: `~/…` или абсолютный, без `..`, строго внутри `home`.
+pub fn resolve_user_path(input: &str, home: &Path) -> Result<PathBuf> {
+    let s = input.trim();
+    if s.is_empty() {
+        bail!("укажи папку");
+    }
+    let raw = match s.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None => PathBuf::from(s),
+    };
+    if !raw.is_absolute() {
+        bail!("путь должен начинаться с ~/ или /");
+    }
+    let mut out = PathBuf::new();
+    for c in raw.components() {
+        match c {
+            Component::RootDir => out.push("/"),
+            Component::Normal(x) => out.push(x),
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) => bail!("в пути не должно быть .."),
+        }
+    }
+    if out == home || !out.starts_with(home) {
+        bail!("папка должна быть внутри {}", home.display());
+    }
+    Ok(out)
+}
+
 /// Последние `n` непустых строк текста.
 pub fn tail_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -120,6 +148,17 @@ mod tests {
     fn truncate() {
         assert_eq!(truncate_chars("привет  мир", 20), "привет мир");
         assert_eq!(truncate_chars("абвгд", 3), "абв…");
+    }
+
+    #[test]
+    fn user_paths() {
+        let home = Path::new("/home/u");
+        let ok = |s: &str| resolve_user_path(s, home).unwrap();
+        assert_eq!(ok("~/p/x/"), Path::new("/home/u/p/x"));
+        assert_eq!(ok(" /home/u/p/./x "), Path::new("/home/u/p/x"));
+        for bad in ["", "~", "~/", "p/x", "/home/u/../v", "~/p/../../v", "/srv/x", "/home/user2/x"] {
+            assert!(resolve_user_path(bad, home).is_err(), "{bad}");
+        }
     }
 
     #[test]

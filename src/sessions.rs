@@ -317,6 +317,23 @@ impl Scanner {
     pub fn get(&self, id: Uuid) -> Option<Session> {
         self.scan().into_iter().find(|s| s.id == id)
     }
+
+    /// Файл транскрипта по id, даже без сообщений (новая сессия до первого промпта).
+    pub fn find_file(&self, id: Uuid) -> Option<PathBuf> {
+        let name = format!("{id}.jsonl");
+        std::fs::read_dir(&self.projects)
+            .ok()?
+            .flatten()
+            .map(|d| d.path().join(&name))
+            .filter(|p| p.is_file())
+            .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
+    }
+
+    /// Ссылка RC из транскрипта, даже без сообщений.
+    pub fn rc_url_any(&self, id: Uuid) -> Option<String> {
+        let parsed = Parsed::from_file(&self.find_file(id)?).ok()?;
+        parsed.bridge_id.as_deref().and_then(rc_url)
+    }
 }
 
 #[cfg(test)]
@@ -410,6 +427,16 @@ mod tests {
         assert!(list[0].has_conflicts);
         // второй проход идёт из кэша и даёт то же самое
         assert_eq!(sc.scan()[0].parsed, list[0].parsed);
+
+        // заглушку без сообщений в списке не видно, но по id она находится
+        let stub_id: Uuid = stub.parse().unwrap();
+        assert!(sc.get(stub_id).is_none());
+        assert_eq!(sc.find_file(stub_id), Some(dir.join(format!("{stub}.jsonl"))));
+        assert_eq!(
+            sc.rc_url_any(stub_id).as_deref(),
+            Some("https://claude.ai/code/session_1")
+        );
+        assert!(sc.find_file(Uuid::from_u128(1)).is_none());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::{
     process::Command,
 };
 
-use claude_sync::git::GitCtx;
+use claude_sync::git::{GitCtx, check_ssh_url};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -262,4 +262,75 @@ async fn feature_branch_is_base() {
     assert_eq!(sh(&e.vps, &["symbolic-ref", "--short", "HEAD"]), "feat");
     assert_eq!(sh(&e.vps, &["status", "--porcelain"]), "");
     assert!(e.remote_has(&e.wip()));
+}
+
+#[tokio::test]
+async fn clone_into_new_dir_then_full_cycle() {
+    let e = Env::new();
+    let url = e.remote.to_str().unwrap();
+    let dest = e.remote.parent().unwrap().join("projects/new/repo");
+
+    let msg = e.ctx.clone_into(url, &dest).await.unwrap();
+    assert!(msg.contains("склонировано"), "{msg}");
+    assert!(dest.join("a.txt").exists());
+    // повторно — тот же репо, ничего не делаем
+    let msg = e.ctx.clone_into(url, &dest).await.unwrap();
+    assert_eq!(msg, "репо уже склонирован");
+
+    identity(&dest, "vps");
+    e.ctx.prepare(&e.id, &dest).await.unwrap();
+    std::fs::write(dest.join("n.txt"), "new session\n").unwrap();
+    let msg = e.ctx.finalize(&e.id, &dest, "Новая сессия").await.unwrap();
+    assert!(msg.contains(&e.wip()), "{msg}");
+    assert!(e.remote_has(&e.wip()));
+}
+
+#[tokio::test]
+async fn clone_into_refuses_occupied_dirs() {
+    let e = Env::new();
+    let url = e.remote.to_str().unwrap();
+    let root = e.remote.parent().unwrap();
+
+    let busy = root.join("busy");
+    std::fs::create_dir_all(&busy).unwrap();
+    std::fs::write(busy.join("x"), "x").unwrap();
+    let err = e.ctx.clone_into(url, &busy).await.unwrap_err().to_string();
+    assert!(err.contains("не пустая"), "{err}");
+
+    // в папке другой репо
+    let other = format!("{url}-other");
+    let err = e.ctx.clone_into(&other, &e.vps).await.unwrap_err().to_string();
+    assert!(err.contains("другой репо"), "{err}");
+
+    // пустая папка подходит; при ошибке clone она не остаётся мусором
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert!(e.ctx.clone_into("/nonexistent/repo.git", &empty).await.is_err());
+    let missing = root.join("missing/repo");
+    assert!(e.ctx.clone_into("/nonexistent/repo.git", &missing).await.is_err());
+    assert!(!missing.exists());
+}
+
+#[test]
+fn ssh_urls() {
+    for ok in [
+        "git@github.com:aragami3070/claude-sync.git",
+        "git@git.csit.sgu.ru:group/sub/repo",
+        "ssh://git@git.csit.sgu.ru:2222/group/repo.git",
+    ] {
+        assert!(check_ssh_url(ok).is_ok(), "{ok}");
+    }
+    for bad in [
+        "",
+        "https://github.com/a/b.git",
+        "github.com:a/b",
+        "git@github.com:",
+        "-oProxyCommand=x@h:p",
+        "git@github.com:a/b c",
+        "/home/u/repo",
+        "ssh://host",
+        "file:///tmp/x",
+    ] {
+        assert!(check_ssh_url(bad).is_err(), "{bad}");
+    }
 }

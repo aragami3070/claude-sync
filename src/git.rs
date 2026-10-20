@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::util::{self, Output};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
+const CLONE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Что запомнили при resume; нужно при stop, переживает рестарт морды.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -31,11 +32,37 @@ pub struct GitCtx {
 }
 
 async fn run_git(cwd: &Path, args: &[&str]) -> Result<Output> {
+    run_git_t(cwd, args, TIMEOUT).await
+}
+
+async fn run_git_t(cwd: &Path, args: &[&str], timeout: Duration) -> Result<Output> {
     let mut envs = vec![("GIT_TERMINAL_PROMPT", "0")];
     if std::env::var_os("GIT_SSH_COMMAND").is_none() {
-        envs.push(("GIT_SSH_COMMAND", "ssh -o BatchMode=yes"));
+        // accept-new: незнакомый хост запоминается сам, сменившийся ключ по-прежнему отвергается.
+        envs.push((
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+        ));
     }
-    util::run("git", args, Some(cwd), &envs, TIMEOUT).await
+    util::run("git", args, Some(cwd), &envs, timeout).await
+}
+
+/// Только ssh: `user@host:path` или `ssh://…`. https не годится, по нему не запушить.
+pub fn check_ssh_url(url: &str) -> Result<()> {
+    let clean = !url.starts_with('-') && !url.chars().any(|c| c.is_whitespace() || c.is_control());
+    let scp_like = url.split_once(':').is_some_and(|(left, path)| {
+        !path.is_empty()
+            && !left.contains('/')
+            && left
+                .split_once('@')
+                .is_some_and(|(user, host)| !user.is_empty() && !host.is_empty())
+    });
+    let ssh_scheme = url.strip_prefix("ssh://").is_some_and(|rest| rest.contains('/'));
+    if clean && (scp_like || ssh_scheme) {
+        Ok(())
+    } else {
+        bail!("нужна ssh-ссылка вида git@host:user/repo.git или ssh://git@host/user/repo.git")
+    }
 }
 
 async fn git(cwd: &Path, args: &[&str]) -> Result<String> {
@@ -101,6 +128,37 @@ impl GitCtx {
 
     fn remove_state(&self, id: &Uuid) {
         let _ = std::fs::remove_file(self.state_path(id));
+    }
+
+    /// Клонирует `url` в `dest`. Если там уже клон того же репо, ничего не делает.
+    pub async fn clone_into(&self, url: &str, dest: &Path) -> Result<String> {
+        if dest.join(".git").exists() {
+            // Из конфига как есть: `remote get-url` раскрывает insteadOf.
+            let key = format!("remote.{}.url", self.remote);
+            let have = git(dest, &["config", "--get", &key]).await.unwrap_or_default();
+            if have == url {
+                return Ok("репо уже склонирован".into());
+            }
+            bail!("в {} уже другой репо ({} = {have})", dest.display(), self.remote);
+        }
+        if dest.exists() && (!dest.is_dir() || std::fs::read_dir(dest)?.next().is_some()) {
+            bail!("{} уже есть и это не пустая папка", dest.display());
+        }
+        let parent = dest.parent().context("у папки нет родителя")?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("не создать {}", parent.display()))?;
+        let dest_str = dest.to_str().context("путь не в UTF-8")?;
+        let out = run_git_t(
+            parent,
+            &["clone", "--quiet", "--origin", &self.remote, "--", url, dest_str],
+            CLONE_TIMEOUT,
+        )
+        .await?;
+        if !out.ok() {
+            let _ = std::fs::remove_dir(dest); // только если git оставил пустую папку
+            bail!("git clone не прошёл: {}", out.stderr.trim());
+        }
+        Ok(format!("склонировано из {url}"))
     }
 
     /// Перед resume: подтянуть код. Если сессию уже возобновляли на VPS и
