@@ -200,7 +200,8 @@ pub struct Session {
     pub path: PathBuf,
     pub mtime: SystemTime,
     pub parsed: Parsed,
-    pub has_conflicts: bool,
+    /// sync-conflict копии этого транскрипта.
+    pub conflicts: Vec<PathBuf>,
 }
 
 impl Session {
@@ -246,7 +247,7 @@ impl Scanner {
     /// Все сессии, где есть хотя бы одно сообщение пользователя, свежие первыми.
     pub fn scan(&self) -> Vec<Session> {
         let mut files: Vec<(Uuid, PathBuf)> = Vec::new();
-        let mut conflicts: HashSet<Uuid> = HashSet::new();
+        let mut conflicts: HashMap<Uuid, Vec<PathBuf>> = HashMap::new();
 
         let dirs = std::fs::read_dir(&self.projects).into_iter().flatten().flatten();
         for dir in dirs {
@@ -261,7 +262,7 @@ impl Scanner {
                 };
                 if let Some(pos) = stem.find(CONFLICT_MARK) {
                     if let Ok(id) = stem[..pos].parse() {
-                        conflicts.insert(id);
+                        conflicts.entry(id).or_default().push(entry.path());
                     }
                     continue;
                 }
@@ -297,7 +298,11 @@ impl Scanner {
                 path,
                 mtime,
                 parsed,
-                has_conflicts: conflicts.contains(&id),
+                conflicts: {
+                    let mut c = conflicts.get(&id).cloned().unwrap_or_default();
+                    c.sort();
+                    c
+                },
             };
             // Один id в двух папках проектов: берём более свежий файл.
             match by_id.get(&id) {
@@ -424,7 +429,7 @@ mod tests {
         let list = sc.scan();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id.to_string(), a);
-        assert!(list[0].has_conflicts);
+        assert_eq!(list[0].conflicts.len(), 1);
         // второй проход идёт из кэша и даёт то же самое
         assert_eq!(sc.scan()[0].parsed, list[0].parsed);
 

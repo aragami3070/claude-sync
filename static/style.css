@@ -108,3 +108,15 @@ button.more { width: 100%; }
 .new .msg { margin-bottom: 4px; }
 .new .form-actions { display: flex; gap: 8px; }
 .new .form-actions .primary { flex: 1; }
+.header-actions { display: flex; gap: 8px; align-items: center; }
+.btn.warn-btn { border-color: var(--warn); color: var(--warn); }
+.btn.plain { border-color: var(--border); color: var(--text); }
+.flag button.link { color: var(--warn); text-decoration: underline; font-size: 13px; }
+.diff { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.diff-head { font-weight: 600; font-size: 14px; }
+.side { margin: 8px 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.m { margin: 4px 0; padding: 6px 8px; border-radius: 6px; border-left: 3px solid var(--border); background: var(--bg); }
+.m-user { border-left-color: var(--accent); }
+.m-claude { border-left-color: var(--ok); }
+.m .who { font-size: 12px; color: var(--muted); }
+.m pre { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; }

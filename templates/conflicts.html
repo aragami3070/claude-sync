@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Конфликты · {{ node }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Конфликты <small>{{ node }}</small></h1>
+    <a class="btn plain" href="/">← Сессии</a>
+  </header>
+  <main>
+    {% if items.is_empty() %}<p class="empty">Конфликтов нет</p>{% endif %}
+    {% for it in items %}
+    <article class="row st-dead">
+      <div class="head">
+        <span class="title">{{ it.title }}</span>
+        <span class="badge">копий: {{ it.copies }}</span>
+      </div>
+      <div class="meta"><span class="cwd">{{ it.cwd }}</span> · {{ it.ago }}</div>
+      <div class="actions">
+        <button hx-get="/sessions/{{ it.id }}/conflicts" hx-target="#cf-{{ it.id }}" hx-swap="innerHTML"
+          hx-on::before-request="const s = document.getElementById('cf-{{ it.id }}'); if (s.innerHTML.trim()) { s.innerHTML = ''; event.preventDefault(); }">Дифф</button>
+      </div>
+      <div id="cf-{{ it.id }}"></div>
+    </article>
+    {% endfor %}
+  </main>
+</body>
+</html>

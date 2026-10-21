@@ -2,6 +2,7 @@ pub mod app;
 pub mod auth;
 pub mod cleanup;
 pub mod config;
+pub mod conflicts;
 pub mod git;
 pub mod sessions;
 pub mod tmux;

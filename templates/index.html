@@ -10,7 +10,10 @@
 <body>
   <header>
     <h1>claude-sync <small>{{ node }}</small></h1>
-    <button hx-get="/sessions{% if all %}?all=1{% endif %}" hx-target="#list" hx-swap="innerHTML">Обновить</button>
+    <div class="header-actions">
+      {% if conflicts > 0 %}<a class="btn warn-btn" href="/conflicts">⚠ Конфликты: {{ conflicts }}</a>{% endif %}
+      <button hx-get="/sessions{% if all %}?all=1{% endif %}" hx-target="#list" hx-swap="innerHTML">Обновить</button>
+    </div>
   </header>
   <details class="new">
     <summary>Новая сессия</summary>

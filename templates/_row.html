@@ -6,7 +6,13 @@
   <div class="meta">
     <span class="cwd">{{ row.cwd }}</span>{% if let Some(b) = row.branch.as_deref() %} · {{ b }}{% endif %} · {{ row.ago }}
   </div>
-  {% if row.conflict %}<div class="flag">⚠ рядом есть sync-conflict копия транскрипта</div>{% endif %}
+  {% if row.conflict %}
+  <div class="flag">⚠ есть sync-conflict копия транскрипта ·
+    <button class="link" hx-get="/sessions/{{ row.id }}/conflicts" hx-target="#cf-{{ row.id }}" hx-swap="innerHTML"
+      hx-on::before-request="const s = document.getElementById('cf-{{ row.id }}'); if (s.innerHTML.trim()) { s.innerHTML = ''; event.preventDefault(); }">дифф</button>
+  </div>
+  <div id="cf-{{ row.id }}"></div>
+  {% endif %}
   {% if row.no_repo %}<div class="flag">нет git-репозитория в cwd на этой машине</div>{% endif %}
   {% if let Some(c) = row.continued_in.as_deref() %}<div class="flag">продолжена в {{ c }}</div>{% endif %}
   {% if let Some(m) = row.msg.as_deref() %}

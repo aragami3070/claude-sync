@@ -1,0 +1,19 @@
+{% if let Some(e) = error.as_deref() %}<div class="msg err"><pre>{{ e }}</pre></div>{% endif %}
+{% for d in diffs %}
+<div class="diff">
+  <div class="diff-head">Копия от {{ d.label }} · файл изменён {{ d.ago }}</div>
+  <div class="meta">общих сообщений: {{ d.common }} · только в основном: {{ d.main_total }} · только в копии: {{ d.copy_total }}</div>
+  {% if d.main_total == 0 && d.copy_total == 0 %}
+  <div class="meta">Сообщения совпадают, различаются только служебные записи: копию можно удалить.</div>
+  {% endif %}
+  {% if d.main_total > 0 %}
+  <div class="side">Только в основном файле{% if d.hidden_main > 0 %} (последние {{ d.only_main.len() }}, ещё {{ d.hidden_main }} раньше){% endif %}</div>
+  {% for m in d.only_main %}{% include "_msg.html" %}{% endfor %}
+  {% endif %}
+  {% if d.copy_total > 0 %}
+  <div class="side">Только в копии{% if d.hidden_copy > 0 %} (последние {{ d.only_copy.len() }}, ещё {{ d.hidden_copy }} раньше){% endif %}</div>
+  {% for m in d.only_copy %}{% include "_msg.html" %}{% endfor %}
+  {% endif %}
+  <div class="meta cwd">{{ d.file_name }}</div>
+</div>
+{% endfor %}

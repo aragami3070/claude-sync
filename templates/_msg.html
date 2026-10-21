@@ -1,0 +1,4 @@
+<div class="m {% if m.from_user %}m-user{% else %}m-claude{% endif %}">
+  <span class="who">{% if m.from_user %}ты{% else %}claude{% endif %}{% if !m.time.is_empty() %} · {{ m.time }}{% endif %}</span>
+  <pre>{{ m.text }}</pre>
+</div>

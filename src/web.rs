@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::{
     app::{App, Fresh, NewReq, Op},
     auth,
+    conflicts::{self, Diff, Msg},
     git::check_ssh_url,
     sessions::Session,
     tmux::Pane,
@@ -32,6 +33,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/new", post(new_session))
         .route("/sessions/{id}/row", get(row))
         .route("/sessions/{id}/screen", get(screen))
+        .route("/sessions/{id}/conflicts", get(conflict_diff))
+        .route("/conflicts", get(conflicts_page))
         .route("/sessions/{id}/start", post(start))
         .route("/sessions/{id}/stop", post(stop))
         .route("/sessions/{id}/dismiss", post(dismiss))
@@ -125,7 +128,7 @@ impl RowView {
             stop_label: if alive { "Stop" } else { "Вывезти изменения" },
             has_pane: pane.is_some(),
             rc_url,
-            conflict: s.is_some_and(|s| s.has_conflicts),
+            conflict: s.is_some_and(|s| !s.conflicts.is_empty()),
             no_repo: !repo_ok,
             continued_in: s.and_then(|s| s.parsed.continued_in.map(|id| id.to_string())),
             msg,
@@ -139,6 +142,7 @@ impl RowView {
 struct IndexTpl {
     node: String,
     dirs: Vec<String>,
+    conflicts: usize,
     all: bool,
     rows: Vec<RowView>,
     hidden: usize,
@@ -252,6 +256,12 @@ async fn index(
     render(IndexTpl {
         node: app.cfg.node_name.clone(),
         dirs: known_dirs(&app).await,
+        conflicts: app
+            .sessions()
+            .await
+            .iter()
+            .filter(|s| !s.conflicts.is_empty())
+            .count(),
         all,
         rows,
         hidden,
@@ -395,6 +405,112 @@ async fn new_session(
         error: None,
         row: row_view(&app, id).await,
     })
+}
+
+/// Сколько сообщений с каждой стороны показывать: старое обычно не интересно.
+const DIFF_TAIL: usize = 30;
+
+struct DiffView {
+    label: String,
+    file_name: String,
+    ago: String,
+    common: usize,
+    main_total: usize,
+    copy_total: usize,
+    only_main: Vec<Msg>,
+    only_copy: Vec<Msg>,
+    hidden_main: usize,
+    hidden_copy: usize,
+}
+
+fn tail(mut v: Vec<Msg>) -> (Vec<Msg>, usize) {
+    let hidden = v.len().saturating_sub(DIFF_TAIL);
+    v.drain(..hidden);
+    (v, hidden)
+}
+
+impl From<Diff> for DiffView {
+    fn from(d: Diff) -> Self {
+        let (main_total, copy_total) = (d.only_main.len(), d.only_copy.len());
+        let (only_main, hidden_main) = tail(d.only_main);
+        let (only_copy, hidden_copy) = tail(d.only_copy);
+        Self {
+            label: d.label,
+            file_name: d.file_name,
+            ago: ago(d.mtime),
+            common: d.common,
+            main_total,
+            copy_total,
+            only_main,
+            only_copy,
+            hidden_main,
+            hidden_copy,
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "_conflict_diff.html")]
+struct ConflictDiffTpl {
+    diffs: Vec<DiffView>,
+    error: Option<String>,
+}
+
+struct ConflictItem {
+    id: Uuid,
+    title: String,
+    cwd: String,
+    ago: String,
+    copies: usize,
+}
+
+#[derive(Template)]
+#[template(path = "conflicts.html")]
+struct ConflictsTpl {
+    node: String,
+    items: Vec<ConflictItem>,
+}
+
+async fn conflicts_page(State(app): State<Arc<App>>) -> Result<Html<String>, AppError> {
+    let items = app
+        .sessions()
+        .await
+        .into_iter()
+        .filter(|s| !s.conflicts.is_empty())
+        .map(|s| ConflictItem {
+            id: s.id,
+            title: s.title(),
+            cwd: s
+                .cwd()
+                .map(|c| tilde(c, &app.cfg.home))
+                .unwrap_or_else(|| "?".into()),
+            ago: ago(s.mtime),
+            copies: s.conflicts.len(),
+        })
+        .collect();
+    render(ConflictsTpl {
+        node: app.cfg.node_name.clone(),
+        items,
+    })
+}
+
+async fn conflict_diff(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Html<String>, AppError> {
+    let id = parse_id(&id)?;
+    let s = app
+        .session(id)
+        .await
+        .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "сессия не найдена".into()))?;
+    let (main, copies) = (s.path, s.conflicts);
+    let res = tokio::task::spawn_blocking(move || conflicts::diff_all(&main, &copies)).await;
+    let (diffs, error) = match res {
+        Ok(Ok(d)) => (d.into_iter().map(DiffView::from).collect(), None),
+        Ok(Err(e)) => (Vec::new(), Some(format!("{e:#}"))),
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    };
+    render(ConflictDiffTpl { diffs, error })
 }
 
 async fn screen(
