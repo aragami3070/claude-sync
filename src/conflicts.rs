@@ -72,10 +72,58 @@ fn visible_text(from_user: bool, content: &Value) -> Option<String> {
     Some(truncate_chars(text, TEXT_MAX))
 }
 
+/// Саратов: UTC+4 круглый год, без перехода на летнее время.
+const LOCAL_OFFSET_MIN: i64 = 4 * 60;
+
+/// Дни от 1970-01-01 по григорианской дате (алгоритм Хиннанта).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (
+        if m <= 2 {
+            yoe + era * 400 + 1
+        } else {
+            yoe + era * 400
+        },
+        m,
+        d,
+    )
+}
+
+/// `2026-10-19T15:19:21.123Z` (UTC) → `2026-10-19 19:19` по Саратову.
 fn short_time(ts: Option<&str>) -> String {
-    // 2026-10-19T15:19:21.123Z → 2026-10-19 15:19
-    ts.map(|t| t.get(..16).unwrap_or(t).replace('T', " "))
-        .unwrap_or_default()
+    let Some(t) = ts else {
+        return String::new();
+    };
+    let num = |r: std::ops::Range<usize>| t.get(r).and_then(|s| s.parse::<i64>().ok());
+    let parsed = (|| {
+        let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+        let (h, mi) = (num(11..13)?, num(14..16)?);
+        let total = (days_from_civil(y, mo, d) * 24 + h) * 60 + mi + LOCAL_OFFSET_MIN;
+        let (y, mo, d) = civil_from_days(total.div_euclid(1440));
+        let min = total.rem_euclid(1440);
+        Some(format!(
+            "{y:04}-{mo:02}-{d:02} {:02}:{:02}",
+            min / 60,
+            min % 60
+        ))
+    })();
+    parsed.unwrap_or_else(|| t.to_string())
 }
 
 pub fn messages_from(r: impl BufRead) -> Vec<Msg> {
@@ -221,7 +269,7 @@ mod tests {
         let texts: Vec<&str> = m.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, ["привет", "ответ", "🔧 Bash", "только в основном"]);
         assert!(m[0].from_user && !m[1].from_user);
-        assert_eq!(m[0].time, "2026-10-19 15:19");
+        assert_eq!(m[0].time, "2026-10-19 19:19");
         assert_eq!(m[2].time, "");
     }
 
@@ -234,6 +282,20 @@ mod tests {
         let ids = |v: &[Msg]| v.iter().map(|m| m.uuid.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&only_main), ["a2", "u2"]);
         assert_eq!(ids(&only_copy), ["u3"]);
+    }
+
+    #[test]
+    fn saratov_time() {
+        assert_eq!(
+            short_time(Some("2026-10-19T15:19:21.000Z")),
+            "2026-10-19 19:19"
+        );
+        // переход через полночь, конец года и високосный февраль
+        assert_eq!(short_time(Some("2026-12-31T22:30:00Z")), "2027-01-01 02:30");
+        assert_eq!(short_time(Some("2028-02-28T21:00:00Z")), "2028-02-29 01:00");
+        assert_eq!(short_time(Some("2026-02-28T21:00:00Z")), "2026-03-01 01:00");
+        assert_eq!(short_time(Some("мусор")), "мусор");
+        assert_eq!(short_time(None), "");
     }
 
     #[test]
