@@ -26,7 +26,8 @@
     <a class="btn" href="{{ u }}" target="_blank" rel="noopener">Открыть</a>
     {% endif %}
     {% if row.has_pane %}
-    <button hx-get="/sessions/{{ row.id }}/screen" hx-target="#scr-{{ row.id }}" hx-swap="innerHTML">Экран</button>
+    <button hx-get="/sessions/{{ row.id }}/screen" hx-target="#scr-{{ row.id }}" hx-swap="innerHTML"
+      hx-on::before-request="const s = document.getElementById('scr-{{ row.id }}'); if (s.innerHTML.trim()) { s.innerHTML = ''; event.preventDefault(); }">Экран</button>
     {% endif %}
   </div>
   <div id="scr-{{ row.id }}"></div>
