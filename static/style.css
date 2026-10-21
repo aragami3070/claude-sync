@@ -106,3 +106,5 @@ button.more { width: 100%; }
   width: 100%;
 }
 .new .msg { margin-bottom: 4px; }
+.new .form-actions { display: flex; gap: 8px; }
+.new .form-actions .primary { flex: 1; }

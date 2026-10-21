@@ -24,7 +24,10 @@
       <label>Название (необязательно)
         <input name="name" autocomplete="off">
       </label>
-      <button class="primary">Запустить</button>
+      <div class="form-actions">
+        <button class="primary">Запустить</button>
+        <button type="reset" onclick="document.getElementById('new-msg').innerHTML = ''">Очистить</button>
+      </div>
     </form>
     <div id="new-msg"></div>
     <datalist id="dirs">{% for d in dirs %}<option value="{{ d }}">{% endfor %}</datalist>
