@@ -1,12 +1,7 @@
 //! Отметка «доверяю папке» в `~/.claude.json`, чтобы claude не показывал
 //! trust-диалог, на который нельзя ответить с телефона.
 
-use std::{
-    fs,
-    io::Write,
-    os::unix::fs::PermissionsExt,
-    path::Path,
-};
+use std::{fs, io::Write, os::unix::fs::PermissionsExt, path::Path};
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
@@ -19,8 +14,8 @@ pub fn ensure_trusted(claude_json: &Path, cwd: &Path) -> Result<bool> {
             claude_json.display()
         )
     })?;
-    let mut root: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("{} не JSON", claude_json.display()))?;
+    let mut root: Value =
+        serde_json::from_str(&raw).with_context(|| format!("{} не JSON", claude_json.display()))?;
     let Some(obj) = root.as_object_mut() else {
         bail!("{}: ожидается объект", claude_json.display());
     };
@@ -45,7 +40,10 @@ pub fn ensure_trusted(claude_json: &Path, cwd: &Path) -> Result<bool> {
 
     // Атомарная запись: временный файл рядом, права 600, rename.
     let dir = claude_json.parent().unwrap_or(Path::new("."));
-    let tmp = dir.join(format!(".claude.json.claude-sync-{}.tmp", std::process::id()));
+    let tmp = dir.join(format!(
+        ".claude.json.claude-sync-{}.tmp",
+        std::process::id()
+    ));
     let mut f = fs::File::create(&tmp)?;
     f.set_permissions(fs::Permissions::from_mode(0o600))?;
     f.write_all(serde_json::to_string_pretty(&root)?.as_bytes())?;

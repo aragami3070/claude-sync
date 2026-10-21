@@ -26,9 +26,11 @@ fn var(key: &str) -> Option<String> {
 
 fn secs(key: &str, default: u64) -> Result<Duration> {
     match var(key) {
-        Some(v) => Ok(Duration::from_secs(
-            v.parse().with_context(|| format!("{key}: ожидается число секунд"))?,
-        )),
+        Some(v) => {
+            Ok(Duration::from_secs(v.parse().with_context(|| {
+                format!("{key}: ожидается число секунд")
+            })?))
+        }
         None => Ok(Duration::from_secs(default)),
     }
 }

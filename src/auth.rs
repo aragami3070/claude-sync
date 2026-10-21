@@ -33,7 +33,10 @@ pub async fn layer(State(app): State<Arc<App>>, req: Request, next: Next) -> Res
     if !credentials_ok(req.headers(), &app.cfg.auth_user, &app.cfg.auth_pass) {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
-            .header(header::WWW_AUTHENTICATE, r#"Basic realm="claude-sync", charset="UTF-8""#)
+            .header(
+                header::WWW_AUTHENTICATE,
+                r#"Basic realm="claude-sync", charset="UTF-8""#,
+            )
             .body(Body::from("нужна авторизация"))
             .unwrap();
     }

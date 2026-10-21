@@ -206,7 +206,10 @@ impl App {
                 .iter()
                 .find(|s| s.id == *oid)
                 .map(|s| s.title())
-                .or_else(|| self.fresh(oid).map(|f| f.name.unwrap_or_else(|| "новая сессия".into())))
+                .or_else(|| {
+                    self.fresh(oid)
+                        .map(|f| f.name.unwrap_or_else(|| "новая сессия".into()))
+                })
                 .unwrap_or_else(|| oid.to_string())
         };
         // У новой сессии до первого промпта нет транскрипта, её папка есть только в state.
@@ -241,8 +244,14 @@ impl App {
         }
         let git_msg = self.prepare_dir(id, &cwd).await?;
         let offset = std::fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0);
-        self.launch(id, &cwd, &format!("--resume {id}"), Some((s.path, offset)), git_msg)
-            .await
+        self.launch(
+            id,
+            &cwd,
+            &format!("--resume {id}"),
+            Some((s.path, offset)),
+            git_msg,
+        )
+        .await
     }
 
     async fn new_session(&self, id: Uuid, req: NewReq) -> Result<String> {
@@ -258,7 +267,8 @@ impl App {
         if let Some(name) = &req.name {
             args.push_str(&format!(" -n {}", shell_quote(name)));
         }
-        self.launch(id, &req.cwd, &args, None, notes.join("; ")).await
+        self.launch(id, &req.cwd, &args, None, notes.join("; "))
+            .await
     }
 
     /// Общее для Resume и New: проверки, git, trust.

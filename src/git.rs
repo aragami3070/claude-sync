@@ -57,7 +57,9 @@ pub fn check_ssh_url(url: &str) -> Result<()> {
                 .split_once('@')
                 .is_some_and(|(user, host)| !user.is_empty() && !host.is_empty())
     });
-    let ssh_scheme = url.strip_prefix("ssh://").is_some_and(|rest| rest.contains('/'));
+    let ssh_scheme = url
+        .strip_prefix("ssh://")
+        .is_some_and(|rest| rest.contains('/'));
     if clean && (scp_like || ssh_scheme) {
         Ok(())
     } else {
@@ -135,11 +137,17 @@ impl GitCtx {
         if dest.join(".git").exists() {
             // Из конфига как есть: `remote get-url` раскрывает insteadOf.
             let key = format!("remote.{}.url", self.remote);
-            let have = git(dest, &["config", "--get", &key]).await.unwrap_or_default();
+            let have = git(dest, &["config", "--get", &key])
+                .await
+                .unwrap_or_default();
             if have == url {
                 return Ok("репо уже склонирован".into());
             }
-            bail!("в {} уже другой репо ({} = {have})", dest.display(), self.remote);
+            bail!(
+                "в {} уже другой репо ({} = {have})",
+                dest.display(),
+                self.remote
+            );
         }
         if dest.exists() && (!dest.is_dir() || std::fs::read_dir(dest)?.next().is_some()) {
             bail!("{} уже есть и это не пустая папка", dest.display());
@@ -150,7 +158,15 @@ impl GitCtx {
         let dest_str = dest.to_str().context("путь не в UTF-8")?;
         let out = run_git_t(
             parent,
-            &["clone", "--quiet", "--origin", &self.remote, "--", url, dest_str],
+            &[
+                "clone",
+                "--quiet",
+                "--origin",
+                &self.remote,
+                "--",
+                url,
+                dest_str,
+            ],
             CLONE_TIMEOUT,
         )
         .await?;
@@ -226,7 +242,11 @@ impl GitCtx {
     async fn default_branch(&self, cwd: &Path) -> Result<String> {
         let head = git(
             cwd,
-            &["symbolic-ref", "--short", &format!("refs/remotes/{}/HEAD", self.remote)],
+            &[
+                "symbolic-ref",
+                "--short",
+                &format!("refs/remotes/{}/HEAD", self.remote),
+            ],
         )
         .await
         .context("не удалось узнать основную ветку remote")?;

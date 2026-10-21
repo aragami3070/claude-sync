@@ -125,7 +125,11 @@ impl RowView {
             poll,
             can_start: s.is_some() && !poll && pane.is_none() && !has_state && repo_ok,
             can_stop: !poll && (pane.is_some() || has_state),
-            stop_label: if alive { "Stop" } else { "Вывезти изменения" },
+            stop_label: if alive {
+                "Stop"
+            } else {
+                "Вывезти изменения"
+            },
             has_pane: pane.is_some(),
             rc_url,
             conflict: s.is_some_and(|s| !s.conflicts.is_empty()),
@@ -216,18 +220,22 @@ async fn collect_rows(app: &App, all: bool) -> (Vec<RowView>, usize, Option<Stri
         .filter(|id| !known.contains(id))
         .collect();
 
-    let mut rows: Vec<RowView> = extra
-        .into_iter()
-        .map(|id| RowView::build(app, id, None, fresh.get(&id), panes.get(&id), ops.get(&id)))
-        .chain(sessions.iter().map(|s| {
-            RowView::build(app, s.id, Some(s), None, panes.get(&s.id), ops.get(&s.id))
-        }))
-        .collect();
+    let mut rows: Vec<RowView> =
+        extra
+            .into_iter()
+            .map(|id| RowView::build(app, id, None, fresh.get(&id), panes.get(&id), ops.get(&id)))
+            .chain(sessions.iter().map(|s| {
+                RowView::build(app, s.id, Some(s), None, panes.get(&s.id), ops.get(&s.id))
+            }))
+            .collect();
     // Активные (запущенные, не вывезенные, с сообщением) наверх; дальше по свежести.
     rows.sort_by_key(|r| r.status == "stopped" && r.msg.is_none());
     let total = rows.len();
     if !all {
-        let keep = app.cfg.list_limit.max(rows.iter().filter(|r| r.status != "stopped").count());
+        let keep = app
+            .cfg
+            .list_limit
+            .max(rows.iter().filter(|r| r.status != "stopped").count());
         rows.truncate(keep);
     }
     let hidden = total - rows.len();
@@ -298,7 +306,14 @@ async fn row_view(app: &App, id: Uuid) -> Option<RowView> {
     if s.is_none() && pane.is_none() && op.is_none() && app.git.read_state(&id).is_none() {
         return None;
     }
-    Some(RowView::build(app, id, s.as_ref(), fresh.as_ref(), pane, op.as_ref()))
+    Some(RowView::build(
+        app,
+        id,
+        s.as_ref(),
+        fresh.as_ref(),
+        pane,
+        op.as_ref(),
+    ))
 }
 
 async fn row_html(app: &App, id: Uuid) -> Result<Html<String>, AppError> {

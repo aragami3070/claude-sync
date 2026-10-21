@@ -135,7 +135,11 @@ async fn changes_go_to_wip_and_clone_is_reset() {
     std::fs::create_dir_all(e.vps.join("target")).unwrap();
     std::fs::write(e.vps.join("target/x"), "build").unwrap();
 
-    let msg = e.ctx.finalize(&e.id, &e.vps, "Разбор дейликов").await.unwrap();
+    let msg = e
+        .ctx
+        .finalize(&e.id, &e.vps, "Разбор дейликов")
+        .await
+        .unwrap();
     assert!(msg.contains(&e.wip()), "{msg}");
     assert!(msg.contains("2"), "{msg}");
     assert!(e.remote_has(&e.wip()));
@@ -152,7 +156,10 @@ async fn changes_go_to_wip_and_clone_is_reset() {
     }
     assert!(!wip_files.contains("target"));
     let subject = sh(&e.remote, &["log", "-1", "--format=%s%n%b", &e.wip()]);
-    assert!(subject.contains("vps-wip(vps1): Разбор дейликов"), "{subject}");
+    assert!(
+        subject.contains("vps-wip(vps1): Разбор дейликов"),
+        "{subject}"
+    );
     assert!(subject.contains(&e.id.to_string()), "{subject}");
 }
 
@@ -194,7 +201,10 @@ async fn rejected_push_keeps_everything() {
     let err = e.ctx.finalize(&e.id, &e.vps, "t").await.unwrap_err();
     assert!(format!("{err:#}").contains("push"), "{err:#}");
     // ничего не сброшено: коммит с правкой на месте, запись о запуске жива
-    assert_eq!(sh(&e.vps, &["log", "-1", "--format=%s"]), "vps-wip(vps1): t");
+    assert_eq!(
+        sh(&e.vps, &["log", "-1", "--format=%s"]),
+        "vps-wip(vps1): t"
+    );
     assert!(e.vps.join("c.txt").exists());
     assert!(e.ctx.read_state(&e.id).is_some());
 }
@@ -299,15 +309,30 @@ async fn clone_into_refuses_occupied_dirs() {
 
     // в папке другой репо
     let other = format!("{url}-other");
-    let err = e.ctx.clone_into(&other, &e.vps).await.unwrap_err().to_string();
+    let err = e
+        .ctx
+        .clone_into(&other, &e.vps)
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("другой репо"), "{err}");
 
     // пустая папка подходит; при ошибке clone она не остаётся мусором
     let empty = root.join("empty");
     std::fs::create_dir_all(&empty).unwrap();
-    assert!(e.ctx.clone_into("/nonexistent/repo.git", &empty).await.is_err());
+    assert!(
+        e.ctx
+            .clone_into("/nonexistent/repo.git", &empty)
+            .await
+            .is_err()
+    );
     let missing = root.join("missing/repo");
-    assert!(e.ctx.clone_into("/nonexistent/repo.git", &missing).await.is_err());
+    assert!(
+        e.ctx
+            .clone_into("/nonexistent/repo.git", &missing)
+            .await
+            .is_err()
+    );
     assert!(!missing.exists());
 }
 

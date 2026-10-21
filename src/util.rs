@@ -156,7 +156,16 @@ mod tests {
         let ok = |s: &str| resolve_user_path(s, home).unwrap();
         assert_eq!(ok("~/p/x/"), Path::new("/home/u/p/x"));
         assert_eq!(ok(" /home/u/p/./x "), Path::new("/home/u/p/x"));
-        for bad in ["", "~", "~/", "p/x", "/home/u/../v", "~/p/../../v", "/srv/x", "/home/user2/x"] {
+        for bad in [
+            "",
+            "~",
+            "~/",
+            "p/x",
+            "/home/u/../v",
+            "~/p/../../v",
+            "/srv/x",
+            "/home/user2/x",
+        ] {
             assert!(resolve_user_path(bad, home).is_err(), "{bad}");
         }
     }

@@ -78,8 +78,24 @@ impl Tmux {
         let name = session_name(id);
         let cwd = cwd.to_string_lossy();
         self.cmd_ok(&[
-            "new-session", "-d", "-s", &name, "-c", &cwd, "-x", "200", "-y", "50", command,
-            ";", "set-option", "-w", "-t", &name, "remain-on-exit", "on",
+            "new-session",
+            "-d",
+            "-s",
+            &name,
+            "-c",
+            &cwd,
+            "-x",
+            "200",
+            "-y",
+            "50",
+            command,
+            ";",
+            "set-option",
+            "-w",
+            "-t",
+            &name,
+            "remain-on-exit",
+            "on",
         ])
         .await?;
         Ok(())
@@ -102,14 +118,16 @@ impl Tmux {
         let name = session_name(id);
         self.cmd_ok(&["send-keys", "-t", &name, "Escape"]).await?;
         tokio::time::sleep(Duration::from_millis(500)).await;
-        self.cmd_ok(&["send-keys", "-t", &name, "-l", "/exit"]).await?;
+        self.cmd_ok(&["send-keys", "-t", &name, "-l", "/exit"])
+            .await?;
         tokio::time::sleep(Duration::from_millis(500)).await;
         self.cmd_ok(&["send-keys", "-t", &name, "Enter"]).await?;
         Ok(())
     }
 
     pub async fn kill(&self, id: &Uuid) -> Result<()> {
-        self.cmd_ok(&["kill-session", "-t", &session_name(id)]).await?;
+        self.cmd_ok(&["kill-session", "-t", &session_name(id)])
+            .await?;
         Ok(())
     }
 }
@@ -173,7 +191,12 @@ mod tests {
         let pane = tmux.list().await.unwrap()[&id];
         assert!(pane.dead);
         assert_eq!(pane.exit_code, Some(3));
-        assert!(tmux.capture(&id, true).await.unwrap().contains("hello-from-pane"));
+        assert!(
+            tmux.capture(&id, true)
+                .await
+                .unwrap()
+                .contains("hello-from-pane")
+        );
         tmux.kill(&id).await.unwrap();
         assert!(tmux.list().await.unwrap().is_empty());
     }

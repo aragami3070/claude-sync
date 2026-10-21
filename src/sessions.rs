@@ -249,7 +249,10 @@ impl Scanner {
         let mut files: Vec<(Uuid, PathBuf)> = Vec::new();
         let mut conflicts: HashMap<Uuid, Vec<PathBuf>> = HashMap::new();
 
-        let dirs = std::fs::read_dir(&self.projects).into_iter().flatten().flatten();
+        let dirs = std::fs::read_dir(&self.projects)
+            .into_iter()
+            .flatten()
+            .flatten();
         for dir in dirs {
             let Ok(entries) = std::fs::read_dir(dir.path()) else {
                 continue;
@@ -436,7 +439,10 @@ mod tests {
         // заглушку без сообщений в списке не видно, но по id она находится
         let stub_id: Uuid = stub.parse().unwrap();
         assert!(sc.get(stub_id).is_none());
-        assert_eq!(sc.find_file(stub_id), Some(dir.join(format!("{stub}.jsonl"))));
+        assert_eq!(
+            sc.find_file(stub_id),
+            Some(dir.join(format!("{stub}.jsonl")))
+        );
         assert_eq!(
             sc.rc_url_any(stub_id).as_deref(),
             Some("https://claude.ai/code/session_1")
