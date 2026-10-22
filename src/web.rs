@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::{
     app::{App, Fresh, NewReq, Op},
     auth,
-    conflicts::{self, Diff, Msg},
+    conflicts::{self, Diff, Keep, Msg},
     git::check_ssh_url,
     sessions::Session,
     tmux::Pane,
@@ -34,6 +34,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/sessions/{id}/row", get(row))
         .route("/sessions/{id}/screen", get(screen))
         .route("/sessions/{id}/conflicts", get(conflict_diff))
+        .route("/sessions/{id}/conflicts/resolve", post(conflict_resolve))
         .route("/conflicts", get(conflicts_page))
         .route("/sessions/{id}/start", post(start))
         .route("/sessions/{id}/stop", post(stop))
@@ -467,7 +468,9 @@ impl From<Diff> for DiffView {
 #[derive(Template)]
 #[template(path = "_conflict_diff.html")]
 struct ConflictDiffTpl {
+    id: Uuid,
     diffs: Vec<DiffView>,
+    notice: Option<String>,
     error: Option<String>,
 }
 
@@ -514,18 +517,99 @@ async fn conflict_diff(
     Path(id): Path<String>,
 ) -> Result<Html<String>, AppError> {
     let id = parse_id(&id)?;
+    diff_html(&app, id, None, None).await
+}
+
+async fn diff_html(
+    app: &App,
+    id: Uuid,
+    notice: Option<String>,
+    error: Option<String>,
+) -> Result<Html<String>, AppError> {
     let s = app
         .session(id)
         .await
         .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "сессия не найдена".into()))?;
     let (main, copies) = (s.path, s.conflicts);
     let res = tokio::task::spawn_blocking(move || conflicts::diff_all(&main, &copies)).await;
-    let (diffs, error) = match res {
+    let (diffs, diff_err) = match res {
         Ok(Ok(d)) => (d.into_iter().map(DiffView::from).collect(), None),
         Ok(Err(e)) => (Vec::new(), Some(format!("{e:#}"))),
         Err(e) => (Vec::new(), Some(e.to_string())),
     };
-    render(ConflictDiffTpl { diffs, error })
+    render(ConflictDiffTpl {
+        id,
+        diffs,
+        notice,
+        error: error.or(diff_err),
+    })
+}
+
+#[derive(Deserialize)]
+struct ResolveForm {
+    file: String,
+    keep: String,
+}
+
+/// Оставить основной файл или копию. Только при остановленной сессии:
+/// запущенный claude дописывает в основной файл.
+async fn conflict_resolve(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Form(f): Form<ResolveForm>,
+) -> Result<Html<String>, AppError> {
+    let id = parse_id(&id)?;
+    let keep = match f.keep.as_str() {
+        "main" => Keep::Main,
+        "copy" => Keep::Copy,
+        _ => {
+            return Err(AppError(
+                StatusCode::BAD_REQUEST,
+                "keep: main или copy".into(),
+            ));
+        }
+    };
+    let s = app
+        .session(id)
+        .await
+        .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "сессия не найдена".into()))?;
+    let alive = app
+        .tmux
+        .list()
+        .await
+        .ok()
+        .and_then(|p| p.get(&id).map(|p| !p.dead))
+        .unwrap_or(false);
+    let busy = app.op(&id).is_some_and(|o| o.in_progress());
+    if alive || busy {
+        let e = "Сессия запущена на этой VPS: сначала Stop, потом выбирай вариант.".into();
+        return diff_html(&app, id, None, Some(e)).await;
+    }
+    let Some(copy) = s
+        .conflicts
+        .iter()
+        .find(|c| c.file_name().is_some_and(|n| *n == *f.file))
+        .cloned()
+    else {
+        return diff_html(&app, id, None, Some(format!("копии {} уже нет", f.file))).await;
+    };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let trash = app
+        .cfg
+        .state_dir
+        .join("conflict-trash")
+        .join(format!("{id}-{stamp}"));
+    let main = s.path;
+    let res =
+        tokio::task::spawn_blocking(move || conflicts::resolve(&main, &copy, keep, &trash)).await;
+    match res {
+        Ok(Ok(msg)) => diff_html(&app, id, Some(msg), None).await,
+        Ok(Err(e)) => diff_html(&app, id, None, Some(format!("{e:#}"))).await,
+        Err(e) => diff_html(&app, id, None, Some(e.to_string())).await,
+    }
 }
 
 async fn screen(

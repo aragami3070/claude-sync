@@ -1,4 +1,6 @@
 {% if let Some(e) = error.as_deref() %}<div class="msg err"><pre>{{ e }}</pre></div>{% endif %}
+{% if let Some(n) = notice.as_deref() %}<div class="msg"><pre>{{ n }}</pre></div>{% endif %}
+{% if diffs.is_empty() && error.is_none() %}<div class="meta">Конфликтных копий больше нет.</div>{% endif %}
 {% for d in diffs %}
 <div class="diff">
   <div class="diff-head">Копия от {{ d.label }} · файл изменён {{ d.ago }}</div>
@@ -15,5 +17,17 @@
   {% for m in d.only_copy %}{% include "_msg.html" %}{% endfor %}
   {% endif %}
   <div class="meta cwd">{{ d.file_name }}</div>
+  <div class="actions">
+    <form hx-post="/sessions/{{ id }}/conflicts/resolve" hx-target="#cf-{{ id }}" hx-swap="innerHTML" hx-disabled-elt="find button"
+      hx-confirm="Оставить основной файл? Копия уедет в корзину морды.">
+      <input type="hidden" name="file" value="{{ d.file_name }}"><input type="hidden" name="keep" value="main">
+      <button>Оставить основной</button>
+    </form>
+    <form hx-post="/sessions/{{ id }}/conflicts/resolve" hx-target="#cf-{{ id }}" hx-swap="innerHTML" hx-disabled-elt="find button"
+      hx-confirm="Заменить основной файл этой копией? Прежний основной уедет в корзину морды.">
+      <input type="hidden" name="file" value="{{ d.file_name }}"><input type="hidden" name="keep" value="copy">
+      <button class="danger">Оставить копию</button>
+    </form>
+  </div>
 </div>
 {% endfor %}

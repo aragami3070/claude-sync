@@ -242,6 +242,68 @@ pub fn diff_all(main: &Path, copies: &[PathBuf]) -> Result<Vec<Diff>> {
         .collect()
 }
 
+/// Какой вариант транскрипта оставить.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    Main,
+    Copy,
+}
+
+/// Проверяет, что `copy` — sync-conflict копия именно `main`, а не произвольный файл.
+fn check_copy_of(main: &Path, copy: &Path) -> Result<()> {
+    let stem = main
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .context("плохое имя основного файла")?;
+    let name = copy
+        .file_name()
+        .and_then(|s| s.to_str())
+        .context("плохое имя копии")?;
+    let ok = copy.parent() == main.parent()
+        && name.starts_with(&format!("{stem}.sync-conflict-"))
+        && name.ends_with(".jsonl")
+        && !name.contains('/');
+    anyhow::ensure!(ok, "{name} не копия {stem}");
+    Ok(())
+}
+
+/// Переносит файл в корзину; через copy+remove, если корзина на другой ФС.
+fn move_to(src: &Path, dir: &Path) -> Result<()> {
+    let dst = dir.join(src.file_name().context("нет имени файла")?);
+    if std::fs::rename(src, &dst).is_err() {
+        std::fs::copy(src, &dst).with_context(|| format!("не скопировать в {}", dst.display()))?;
+        std::fs::remove_file(src).with_context(|| format!("не удалить {}", src.display()))?;
+    }
+    Ok(())
+}
+
+/// Оставляет один вариант транскрипта, второй уезжает в `trash` (вне папки Syncthing).
+/// `Keep::Copy`: копия атомарно встаёт на место основного файла.
+pub fn resolve(main: &Path, copy: &Path, keep: Keep, trash: &Path) -> Result<String> {
+    check_copy_of(main, copy)?;
+    anyhow::ensure!(copy.is_file(), "копии уже нет");
+    std::fs::create_dir_all(trash).with_context(|| format!("не создать {}", trash.display()))?;
+    match keep {
+        Keep::Main => {
+            move_to(copy, trash)?;
+            Ok(format!(
+                "Оставлен основной файл, копия в {}",
+                trash.display()
+            ))
+        }
+        Keep::Copy => {
+            let saved = trash.join(main.file_name().context("нет имени файла")?);
+            std::fs::copy(main, &saved)
+                .with_context(|| format!("не сохранить основной файл в {}", saved.display()))?;
+            std::fs::rename(copy, main).context("не заменить основной файл копией")?;
+            Ok(format!(
+                "Оставлена копия, прежний основной файл в {}",
+                trash.display()
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +367,47 @@ mod tests {
             "2026-10-19 15:19:21, устройство OHXWZ6E"
         );
         assert_eq!(conflict_label("weird.jsonl"), "weird.jsonl");
+    }
+
+    #[test]
+    fn resolve_keeps_chosen_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = dir.path().join("trash");
+        let main = dir.path().join("abc.jsonl");
+        let copy = dir
+            .path()
+            .join("abc.sync-conflict-20261019-151921-OHXWZ6E.jsonl");
+        let write = || {
+            std::fs::write(&main, "main").unwrap();
+            std::fs::write(&copy, "copy").unwrap();
+        };
+
+        write();
+        resolve(&main, &copy, Keep::Main, &trash).unwrap();
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "main");
+        assert!(!copy.exists());
+        assert!(trash.join(copy.file_name().unwrap()).exists());
+
+        write();
+        resolve(&main, &copy, Keep::Copy, &trash).unwrap();
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "copy");
+        assert!(!copy.exists());
+        assert_eq!(
+            std::fs::read_to_string(trash.join("abc.jsonl")).unwrap(),
+            "main"
+        );
+    }
+
+    #[test]
+    fn resolve_rejects_foreign_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("abc.jsonl");
+        let other = dir
+            .path()
+            .join("xyz.sync-conflict-20261019-151921-OHXWZ6E.jsonl");
+        std::fs::write(&main, "main").unwrap();
+        std::fs::write(&other, "x").unwrap();
+        assert!(resolve(&main, &other, Keep::Copy, &dir.path().join("t")).is_err());
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "main");
     }
 }
