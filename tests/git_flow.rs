@@ -210,6 +210,45 @@ async fn rejected_push_keeps_everything() {
 }
 
 #[tokio::test]
+async fn junk_blocks_finalize_and_keeps_clone() {
+    let e = Env::new();
+    e.ctx.prepare(&e.id, &e.vps).await.unwrap();
+    std::fs::write(e.vps.join("a.txt"), "changed\n").unwrap();
+    std::fs::create_dir_all(e.vps.join(".venv/lib")).unwrap();
+    std::fs::write(e.vps.join(".venv/pyvenv.cfg"), "home = /usr\n").unwrap();
+    std::fs::write(e.vps.join(".venv/lib/x.py"), "").unwrap();
+    std::fs::create_dir_all(e.vps.join("web/node_modules/a")).unwrap();
+    std::fs::write(e.vps.join("web/node_modules/a/i.js"), "").unwrap();
+    let big = std::fs::File::create(e.vps.join("dump.bin")).unwrap();
+    big.set_len(60 * 1024 * 1024).unwrap();
+
+    let err = format!(
+        "{:#}",
+        e.ctx.finalize(&e.id, &e.vps, "t").await.unwrap_err()
+    );
+    assert!(err.contains(".venv/ (python venv)"), "{err}");
+    assert!(!err.contains("x.py"), "{err}");
+    assert!(err.contains("web/node_modules/ (node_modules)"), "{err}");
+    assert!(err.contains("dump.bin (60 МБ)"), "{err}");
+    // ничего не закоммичено и не запушено, запуск не завершён
+    assert_eq!(
+        sh(&e.vps, &["rev-parse", "HEAD"]),
+        sh(&e.vps, &["rev-parse", "origin/main"])
+    );
+    assert!(!e.remote_has(&e.wip()));
+    assert!(e.ctx.read_state(&e.id).is_some());
+
+    // после .gitignore Stop проходит
+    std::fs::write(
+        e.vps.join(".git/info/exclude"),
+        ".venv/\nnode_modules/\ndump.bin\n",
+    )
+    .unwrap();
+    e.ctx.finalize(&e.id, &e.vps, "t").await.unwrap();
+    assert!(e.remote_has(&e.wip()));
+}
+
+#[tokio::test]
 async fn dirty_clone_blocks_prepare() {
     let e = Env::new();
     std::fs::write(e.vps.join("a.txt"), "dirty\n").unwrap();

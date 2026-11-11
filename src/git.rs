@@ -14,6 +14,9 @@ use crate::util::{self, Output};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 const CLONE_TIMEOUT: Duration = Duration::from_secs(600);
+/// GitHub отбивает файлы больше 100 МБ; берём с запасом.
+const BIG_FILE: u64 = 50 * 1024 * 1024;
+const JUNK_SHOWN: usize = 10;
 
 /// Что запомнили при resume; нужно при stop, переживает рестарт морды.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -89,6 +92,55 @@ async fn ref_exists(cwd: &Path, r: &str) -> Result<bool> {
 async fn current_branch(cwd: &Path) -> Result<Option<String>> {
     let out = run_git(cwd, &["symbolic-ref", "--short", "-q", "HEAD"]).await?;
     Ok(out.ok().then(|| out.stdout.trim().to_string()))
+}
+
+/// Неотслеживаемое, что нельзя коммитить на Stop: venv, `node_modules`, большие файлы.
+/// Каждая находка — путь относительно репо с причиной.
+pub async fn junk_untracked(cwd: &Path) -> Result<Vec<String>> {
+    let raw = run_git(cwd, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
+    if !raw.ok() {
+        bail!("git ls-files: {}", raw.stderr.trim());
+    }
+    let mut found: Vec<String> = Vec::new();
+    let mut push = |item: String| {
+        if !found.contains(&item) {
+            found.push(item);
+        }
+    };
+    for rel in raw.stdout.split('\0').filter(|p| !p.is_empty()) {
+        let path = Path::new(rel);
+        if let Some(i) = rel.split('/').position(|c| c == "node_modules") {
+            let dir: Vec<&str> = rel.split('/').take(i + 1).collect();
+            push(format!("{}/ (node_modules)", dir.join("/")));
+            continue;
+        }
+        if path.file_name().is_some_and(|n| n == "pyvenv.cfg") {
+            let dir = path
+                .parent()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            push(format!(
+                "{}/ (python venv)",
+                if dir.is_empty() { ".".into() } else { dir }
+            ));
+            continue;
+        }
+        if let Ok(m) = std::fs::symlink_metadata(cwd.join(path))
+            && m.is_file()
+            && m.len() > BIG_FILE
+        {
+            push(format!("{rel} ({} МБ)", m.len() / (1024 * 1024)));
+        }
+    }
+    // Файлы внутри venv тоже не показываем по отдельности.
+    let venvs: Vec<String> = found
+        .iter()
+        .filter_map(|f| f.strip_suffix(" (python venv)").map(str::to_string))
+        .collect();
+    found.retain(|f| {
+        f.ends_with(" (python venv)") || !venvs.iter().any(|v| f.starts_with(v.as_str()))
+    });
+    Ok(found)
 }
 
 impl GitCtx {
@@ -273,6 +325,21 @@ impl GitCtx {
         git(cwd, &["fetch", &self.remote, "--prune"]).await?;
 
         if !git(cwd, &["status", "--porcelain"]).await?.is_empty() {
+            let junk = junk_untracked(cwd).await?;
+            if !junk.is_empty() {
+                let more = junk.len().saturating_sub(JUNK_SHOWN);
+                let mut list: Vec<String> = junk.into_iter().take(JUNK_SHOWN).collect();
+                if more > 0 {
+                    list.push(format!("…и ещё {more}"));
+                }
+                bail!(
+                    "в {} неотслеживаемые файлы, которые нельзя коммитить:\n  {}\n\
+                     Добавь их в .gitignore (или .git/info/exclude на VPS) и нажми Stop ещё раз; \
+                     клон не тронут",
+                    cwd.display(),
+                    list.join("\n  ")
+                );
+            }
             git(cwd, &["add", "-A"]).await?;
             git(
                 cwd,
