@@ -24,6 +24,7 @@ use crate::{
     sessions::Session,
     tmux::Pane,
     util::{ago, find_git_root, resolve_user_path, tilde, truncate_chars},
+    workspace,
 };
 
 pub fn router(app: Arc<App>) -> Router {
@@ -67,6 +68,8 @@ pub struct RowView {
     pub continued_in: Option<String>,
     pub msg: Option<String>,
     pub msg_error: bool,
+    /// Перед Stop нужно второе подтверждение: текст предупреждения.
+    pub stop_warning: Option<String>,
 }
 
 impl RowView {
@@ -79,9 +82,10 @@ impl RowView {
         pane: Option<&Pane>,
         op: Option<&Op>,
     ) -> Self {
-        let state = app.git.read_state(&id);
+        let state = app.git.states_of(&id).into_iter().next();
         let has_state = state.is_some();
-        let repo_ok = s.is_none_or(|s| s.git_root().is_some());
+        let repo_ok = s
+            .is_none_or(|s| s.git_root().is_some() || s.cwd().is_some_and(workspace::is_workspace));
         let alive = pane.is_some_and(|p| !p.dead);
 
         let (status, status_label, poll) = match (op, pane) {
@@ -101,7 +105,7 @@ impl RowView {
             .and_then(Session::cwd)
             .map(FsPath::to_path_buf)
             .or_else(|| fresh.map(|f| f.cwd.clone()))
-            .or_else(|| state.map(|st| st.cwd));
+            .or_else(|| state.map(|st| st.workspace.unwrap_or(st.cwd)));
         let rc_url = match (alive, s) {
             (false, _) => None,
             (true, Some(s)) => s.rc_url(),
@@ -138,6 +142,7 @@ impl RowView {
             continued_in: s.and_then(|s| s.parsed.continued_in.map(|id| id.to_string())),
             msg,
             msg_error,
+            stop_warning: None,
         }
     }
 }
@@ -249,7 +254,13 @@ async fn known_dirs(app: &App) -> Vec<String> {
     app.sessions()
         .await
         .iter()
-        .filter_map(Session::git_root)
+        .filter_map(|s| {
+            s.git_root().or_else(|| {
+                s.cwd()
+                    .filter(|c| workspace::is_workspace(c))
+                    .map(FsPath::to_path_buf)
+            })
+        })
         .filter(|r| seen.insert(r.clone()))
         .map(|r| tilde(&r, &app.cfg.home))
         .take(40)
@@ -304,7 +315,7 @@ async fn row_view(app: &App, id: Uuid) -> Option<RowView> {
     let panes = app.tmux.list().await.unwrap_or_default();
     let op = app.op(&id);
     let pane = panes.get(&id);
-    if s.is_none() && pane.is_none() && op.is_none() && app.git.read_state(&id).is_none() {
+    if s.is_none() && pane.is_none() && op.is_none() && !app.git.has_state(&id) {
         return None;
     }
     Some(RowView::build(
@@ -346,10 +357,17 @@ async fn start(
 async fn stop(
     State(app): State<Arc<App>>,
     Path(id): Path<String>,
+    body: String,
 ) -> Result<Html<String>, AppError> {
     let id = parse_id(&id)?;
-    if row_view(&app, id).await.is_none() {
+    // Тело разбираем сами: у обычной кнопки Stop его нет вовсе.
+    let confirmed = body.split('&').any(|kv| kv == "confirmed=1");
+    let Some(mut row) = row_view(&app, id).await else {
         return Err(AppError(StatusCode::NOT_FOUND, "сессия не найдена".into()));
+    };
+    if !confirmed && let Some(w) = app.stop_warning(id).await {
+        row.stop_warning = Some(w);
+        return render(RowTpl { row });
     }
     app.spawn_stop(id);
     row_html(&app, id).await
@@ -393,8 +411,11 @@ fn parse_new(app: &App, f: &NewForm) -> anyhow::Result<NewReq> {
                     tilde(&cwd, &app.cfg.home)
                 );
             }
-            if find_git_root(&cwd).is_none() {
-                anyhow::bail!("в {} нет git-репозитория", tilde(&cwd, &app.cfg.home));
+            if find_git_root(&cwd).is_none() && workspace::child_repos(&cwd).is_empty() {
+                anyhow::bail!(
+                    "в {} нет git-репозитория, и в дочерних папках тоже",
+                    tilde(&cwd, &app.cfg.home)
+                );
             }
         }
     }

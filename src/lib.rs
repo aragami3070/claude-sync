@@ -9,3 +9,4 @@ pub mod tmux;
 pub mod trust;
 pub mod util;
 pub mod web;
+pub mod workspace;

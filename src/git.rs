@@ -21,7 +21,11 @@ const JUNK_SHOWN: usize = 10;
 /// Что запомнили при resume; нужно при stop, переживает рестарт морды.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RunState {
+    /// Где работает git: корень репо (у рабочей папки — одно из её репо).
     pub cwd: PathBuf,
+    /// Папка сессии, если это рабочая папка с несколькими репо.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
     pub base_branch: String,
     pub started_at: u64,
     pub node: String,
@@ -143,45 +147,80 @@ pub async fn junk_untracked(cwd: &Path) -> Result<Vec<String>> {
     Ok(found)
 }
 
+fn read_json(path: &Path) -> Option<RunState> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 impl GitCtx {
     pub fn wip_branch(&self, id: &Uuid) -> String {
         format!("{}{id}", self.wip_prefix)
     }
 
-    fn state_path(&self, id: &Uuid) -> PathBuf {
-        self.state_dir.join(format!("{id}.json"))
+    /// `{id}.json` у обычной сессии, `{id}@{slug}.json` у каждого репо рабочей папки.
+    fn state_path(&self, id: &Uuid, repo: Option<&Path>) -> PathBuf {
+        match repo {
+            None => self.state_dir.join(format!("{id}.json")),
+            Some(r) => {
+                let slug: String = r
+                    .to_string_lossy()
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                    .collect();
+                self.state_dir.join(format!("{id}@{slug}.json"))
+            }
+        }
     }
 
+    /// Состояние обычной (одно-репо) сессии.
     pub fn read_state(&self, id: &Uuid) -> Option<RunState> {
-        let raw = std::fs::read_to_string(self.state_path(id)).ok()?;
-        serde_json::from_str(&raw).ok()
+        read_json(&self.state_path(id, None))
     }
 
-    /// Все незавершённые запуски (id → состояние).
+    /// Есть ли у сессии хоть один не вывезенный запуск.
+    pub fn has_state(&self, id: &Uuid) -> bool {
+        !self.states_of(id).is_empty()
+    }
+
+    /// Все состояния сессии: обычное и по репо рабочей папки.
+    pub fn states_of(&self, id: &Uuid) -> Vec<RunState> {
+        self.all_states()
+            .into_iter()
+            .filter(|(oid, _)| oid == id)
+            .map(|(_, st)| st)
+            .collect()
+    }
+
+    /// Все незавершённые запуски (id → состояние); у рабочей папки id повторяется.
     pub fn all_states(&self) -> Vec<(Uuid, RunState)> {
         let Ok(dir) = std::fs::read_dir(&self.state_dir) else {
             return Vec::new();
         };
-        dir.flatten()
+        let mut out: Vec<(Uuid, RunState)> = dir
+            .flatten()
             .filter_map(|e| {
                 let name = e.file_name();
-                let id: Uuid = name.to_str()?.strip_suffix(".json")?.parse().ok()?;
-                Some((id, self.read_state(&id)?))
+                let name = name.to_str()?.strip_suffix(".json")?;
+                let id: Uuid = name.split('@').next()?.parse().ok()?;
+                Some((id, read_json(&e.path())?))
             })
-            .collect()
+            .collect();
+        out.sort_by(|a, b| a.1.cwd.cmp(&b.1.cwd));
+        out
     }
 
-    fn write_state(&self, id: &Uuid, st: &RunState) -> Result<()> {
+    fn write_state(&self, id: &Uuid, repo: Option<&Path>, st: &RunState) -> Result<()> {
         std::fs::create_dir_all(&self.state_dir)
             .with_context(|| format!("не создать {}", self.state_dir.display()))?;
-        let tmp = self.state_dir.join(format!(".{id}.tmp"));
+        let path = self.state_path(id, repo);
+        let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(st)?)?;
-        std::fs::rename(tmp, self.state_path(id))?;
+        std::fs::rename(tmp, path)?;
         Ok(())
     }
 
-    fn remove_state(&self, id: &Uuid) {
-        let _ = std::fs::remove_file(self.state_path(id));
+    fn remove_state(&self, id: &Uuid, repo: Option<&Path>) {
+        let _ = std::fs::remove_file(self.state_path(id, repo));
     }
 
     /// Клонирует `url` в `dest`. Если там уже клон того же репо, ничего не делает.
@@ -232,10 +271,20 @@ impl GitCtx {
     /// Перед resume: подтянуть код. Если сессию уже возобновляли на VPS и
     /// её wip-ветка не влита, продолжаем с неё.
     pub async fn prepare(&self, id: &Uuid, cwd: &Path) -> Result<String> {
+        self.prepare_at(id, cwd, None).await
+    }
+
+    /// Одно репо рабочей папки `workspace`.
+    pub async fn prepare_repo(&self, id: &Uuid, repo: &Path, workspace: &Path) -> Result<String> {
+        self.prepare_at(id, repo, Some(workspace)).await
+    }
+
+    async fn prepare_at(&self, id: &Uuid, cwd: &Path, workspace: Option<&Path>) -> Result<String> {
+        let slot = workspace.map(|_| cwd);
         git(cwd, &["rev-parse", "--show-toplevel"])
             .await
             .context("нет git-репозитория в cwd")?;
-        if self.read_state(id).is_some() {
+        if read_json(&self.state_path(id, slot)).is_some() {
             bail!("прошлый запуск этой сессии не завершён: сначала нажми Stop");
         }
         let Some(branch) = current_branch(cwd).await? else {
@@ -281,8 +330,10 @@ impl GitCtx {
             .unwrap_or(0);
         self.write_state(
             id,
+            slot,
             &RunState {
                 cwd: cwd.to_path_buf(),
+                workspace: workspace.map(Path::to_path_buf),
                 base_branch: branch,
                 started_at,
                 node: self.node.clone(),
@@ -311,7 +362,17 @@ impl GitCtx {
     /// После остановки claude: увезти изменения в wip-ветку и вернуть клон
     /// в состояние remote. `reset --hard` только после успешного push.
     pub async fn finalize(&self, id: &Uuid, cwd: &Path, title: &str) -> Result<String> {
-        let base = match self.read_state(id) {
+        self.finalize_at(id, cwd, title, false).await
+    }
+
+    /// Одно репо рабочей папки (state по этому репо может и не быть).
+    pub async fn finalize_repo(&self, id: &Uuid, repo: &Path, title: &str) -> Result<String> {
+        self.finalize_at(id, repo, title, true).await
+    }
+
+    async fn finalize_at(&self, id: &Uuid, cwd: &Path, title: &str, ws: bool) -> Result<String> {
+        let slot = ws.then_some(cwd);
+        let base = match read_json(&self.state_path(id, slot)) {
             Some(st) => st.base_branch,
             None => match current_branch(cwd).await? {
                 Some(b) if !b.starts_with(&self.wip_prefix) => b,
@@ -387,7 +448,7 @@ impl GitCtx {
         if ref_exists(cwd, &format!("refs/heads/{wip}")).await? {
             git(cwd, &["branch", "-D", &wip]).await?;
         }
-        self.remove_state(id);
+        self.remove_state(id, slot);
         Ok(msg)
     }
 }

@@ -398,3 +398,24 @@ fn ssh_urls() {
         assert!(check_ssh_url(bad).is_err(), "{bad}");
     }
 }
+
+#[tokio::test]
+async fn workspace_repo_has_own_state() {
+    let e = Env::new();
+    let ws = e.vps.parent().unwrap().to_path_buf();
+    e.ctx.prepare_repo(&e.id, &e.vps, &ws).await.unwrap();
+    // обычного state нет, но запуск числится незавершённым
+    assert!(e.ctx.read_state(&e.id).is_none());
+    let states = e.ctx.states_of(&e.id);
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].cwd, e.vps);
+    assert_eq!(states[0].workspace.as_deref(), Some(ws.as_path()));
+    assert!(e.ctx.prepare_repo(&e.id, &e.vps, &ws).await.is_err());
+
+    std::fs::write(e.vps.join("a.txt"), "ws change\n").unwrap();
+    let msg = e.ctx.finalize_repo(&e.id, &e.vps, "t").await.unwrap();
+    assert!(msg.contains("увезены"), "{msg}");
+    assert!(e.remote_has(&e.wip()));
+    assert!(!e.ctx.has_state(&e.id));
+    e.assert_vps_clean_on_main();
+}

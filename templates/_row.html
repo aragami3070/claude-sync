@@ -21,6 +21,16 @@
     <button class="link" hx-post="/sessions/{{ row.id }}/dismiss" hx-target="#s-{{ row.id }}" hx-swap="outerHTML">скрыть</button>
   </div>
   {% endif %}
+  {% if let Some(w) = row.stop_warning.as_deref() %}
+  <div class="msg err">
+    <pre>⚠ {{ w }}</pre>
+    <div class="actions">
+      <button class="danger" hx-post="/sessions/{{ row.id }}/stop" hx-vals='{"confirmed": "1"}' hx-target="#s-{{ row.id }}" hx-swap="outerHTML" hx-disabled-elt="this"
+        hx-confirm="Точно остановить? {{ w }}">Всё равно остановить</button>
+      <button hx-get="/sessions/{{ row.id }}/row" hx-target="#s-{{ row.id }}" hx-swap="outerHTML">Отмена</button>
+    </div>
+  </div>
+  {% endif %}
   <div class="actions">
     {% if row.can_start %}
     <button class="primary" hx-post="/sessions/{{ row.id }}/start" hx-target="#s-{{ row.id }}" hx-swap="outerHTML" hx-disabled-elt="this">Resume</button>
